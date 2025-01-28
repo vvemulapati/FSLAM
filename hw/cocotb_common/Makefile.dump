@@ -1,0 +1,107 @@
+
+## include this in your normal cocotb Makefile in place of standard cocotb
+## include to support waveform dumping with SIM=<vcs|icarus|verilator>
+
+## For vcs:
+## 	To select between *.vcd and *.vpd waveform dumps, set WAVES=<VCD|VPD>
+## 	variable. This variable can be an environmental varaiable, a variable
+## 	defined in the Makefile, or a variable passed to make.
+
+## For icarus or verilator:
+## 	To select between *.vcd and *.fst waveform dumps, set WAVES=<VCD|FST>
+## 	variable. This variable can be an environmental varaiable, a variable
+## 	defined in the Makefile, or a variable passed to make.
+
+ifeq ($(SIM), vcs)
+	COMPILE_ARGS += -debug_access -kdb
+
+	ifneq ($(WAVES),)
+		VERILOG_SOURCES += $(PWD)/vcs_dump.v
+		COMPILE_ARGS += -top $(TOPLEVEL) -top vcs_dump -debug_access+all+dmptf -debug_region+cell
+
+		ifeq ($(WAVES), VCD)
+			SIM_ARGS += +COCOTB_DUMP_VCD
+		endif # ifeq ($(WAVES), VCD)
+
+		ifeq ($(WAVES), FSDB)
+			SIM_ARGS += +COCOTB_DUMP_FSDB
+		endif # ifeq ($(WAVES), FSDB)
+
+		ifeq ($(WAVES), VPD)
+			SIM_ARGS += +COCOTB_DUMP_VPD
+		endif # ifeq ($(WAVES), VPD)
+
+	endif # ifneq ($(WAVES),)
+
+endif # ifeq ($(SIM), vcs)
+
+
+ifeq ($(SIM), verilator)
+
+	ifeq ($(WAVES), FST)
+		EXTRA_ARGS += --trace-fst --trace-structs
+	endif # ifeq ($(WAVES), FST)
+
+	ifeq ($(WAVES), VCD)
+		EXTRA_ARGS += --trace --trace-structs
+	endif # ifeq $(WAVES, VCD)
+
+endif # ifeq ($(SIM), verilator)
+
+ifeq ($(SIM), icarus)
+
+	ifneq ($(WAVES),)
+		VERILOG_SOURCES += $(PWD)/icarus_dump.v
+		COMPILE_ARGS += -s icarus_dump
+	endif # ifneq ($(WAVES),)
+
+	ifeq ($(WAVES), FST)
+		PLUSARGS += -fst +COCOTB_DUMP_FST
+	endif # ifeq ($(WAVES), FST)
+
+	ifeq ($(WAVES), VCD)
+		PLUSARGS += +COCOTB_DUMP_VCD
+	endif # ifeq $(WAVES, VCD)
+
+endif # ifeq ($(SIM), icarus)
+
+# include cocotb's make rules to take care of the simulator setup
+include $(shell cocotb-config --makefiles)/Makefile.sim 
+
+$(PWD)/vcs_dump.v:
+	@echo 'module vcs_dump;' > $@
+	@echo '    initial begin' >> $@
+	@echo '        if ($$test$$plusargs("COCOTB_DUMP_VCD")) begin' >> $@
+	@echo '            $$dumpfile("$(TOPLEVEL).vcd");' >> $@
+	@echo '            $$dumpvars(0, $(TOPLEVEL));' >> $@
+	@echo '        end' >> $@
+	@echo '        else if ($$test$$plusargs("COCOTB_DUMP_FSDB")) begin' >> $@
+	@echo '            $$fsdbDumpfile("$(TOPLEVEL).fsdb");' >> $@
+	@echo '            $$fsdbDumpvars(0, $(TOPLEVEL),"+mda");' >> $@
+	@echo '        end' >> $@
+	@echo '        else if ($$test$$plusargs("COCOTB_DUMP_VPD")) begin' >> $@
+	@echo '            $$vcdplusfile("$(TOPLEVEL).vpd");' >> $@
+	@echo '            $$vcdpluson(0, $(TOPLEVEL));' >> $@
+	@echo '            $$vcdplusmemon();' >> $@
+	@echo '        end' >> $@
+	@echo '    end' >> $@
+	@echo 'endmodule' >> $@
+
+$(PWD)/icarus_dump.v:
+	@echo 'module icarus_dump;' > $@
+	@echo '    initial begin' >> $@
+	@echo '        if ($$test$$plusargs("COCOTB_DUMP_VCD")) begin' >> $@
+	@echo '            $$dumpfile("$(TOPLEVEL).vcd");' >> $@
+	@echo '            $$dumpvars(0, $(TOPLEVEL));' >> $@
+	@echo '        end' >> $@
+	@echo '        else if ($$test$$plusargs("COCOTB_DUMP_FST")) begin' >> $@
+	@echo '            $$dumpfile("$(TOPLEVEL).fst");' >> $@
+	@echo '            $$dumpvars(0, $(TOPLEVEL));' >> $@
+	@echo '        end' >> $@
+	@echo '    end' >> $@
+	@echo 'endmodule' >> $@
+
+clean::
+	@rm -rf *.fst *.vcd *.vpd
+	@rm -rf icarus_dump.v
+	@rm -rf vcs_dump.v
