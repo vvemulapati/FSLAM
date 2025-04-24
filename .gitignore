@@ -1,0 +1,26 @@
+__pycache__
+sim_build
+verdiLog
+
+venv
+
+# cocotb related
+vcs_dump.v
+results.xml
+
+# simulator stuff
+*.log
+*.conf
+simv*
+csrc
+
+
+*.key
+
+# debug related
+*.fsdb
+*.vcd
+*.vpd
+*.fst
+*.rc
+
