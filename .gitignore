@@ -1,0 +1,10 @@
+__pycache__
+*daidir
+*.metadata*
+ucli.key
+obj_dir_verilator
+csrc
+*.log
+*.fsdb*
+
+
