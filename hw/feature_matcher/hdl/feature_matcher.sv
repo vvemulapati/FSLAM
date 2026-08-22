@@ -52,7 +52,7 @@ module feature_matcher #(
     logic [8:0] feat_count;
 
     // Feature storage logic
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             feat_count <= '0;
             for (int i = 0; i < MAX_FEATURES; i++) begin
@@ -97,7 +97,7 @@ module feature_matcher #(
     logic [DESCRIPTOR_BITS-1:0] query_desc_reg;
     logic [7:0]  cur_dist;
 
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             m_state        <= M_IDLE;
             search_idx     <= '0;

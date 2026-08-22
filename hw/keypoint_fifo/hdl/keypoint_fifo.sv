@@ -55,7 +55,7 @@ module keypoint_fifo #(
     assign dout = mem[rd_ptr];
 
     // FIFO State update
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             wr_ptr     <= '0;
             rd_ptr     <= '0;

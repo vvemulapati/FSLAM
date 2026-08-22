@@ -169,7 +169,7 @@ module feature_extractor #(
         kp_fifo_rd_en = !kp_fifo_empty && !brief_busy && !ori_busy && !disp_pending && !disp_valid && !ori_valid;
     end
 
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             disp_valid   <= 1'b0;
             disp_score   <= '0;

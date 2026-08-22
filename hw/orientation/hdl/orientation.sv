@@ -73,7 +73,7 @@ module orientation #(
     logic signed [15:0] s_cout_pipe [0:WINDOW_SIZE-1];
     logic signed [20:0] m01_cout_pipe [0:WINDOW_SIZE-1];
 
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             for (int i = 0; i < WINDOW_SIZE; i++) begin
                 s_cout_pipe[i]   <= '0;
@@ -97,7 +97,7 @@ module orientation #(
     logic signed [27:0] m01_reg;
     logic signed [27:0] m10_reg;
 
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             m00_reg <= '0;
             m01_reg <= '0;
@@ -158,7 +158,7 @@ module orientation #(
     assign computed_angle = {quadrant, sector_in_quad};
 
     // Output stage gated by keypoint trigger
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             orientation_out    <= '0;
             keypoint_score_out <= '0;

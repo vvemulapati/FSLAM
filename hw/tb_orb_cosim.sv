@@ -85,7 +85,7 @@ module tb_orb_cosim;
     int out_file;
 
     // Feature packet receiver
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             rtl_feature_count <= 0;
             word_idx          <= 0;

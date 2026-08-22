@@ -59,7 +59,7 @@ module rotator #(
         rot_y = (x_in * sin_val) + (y_in * cos_val);
     end
 
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             valid_out <= 1'b0;
             x_out     <= '0;

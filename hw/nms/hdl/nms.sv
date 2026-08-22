@@ -48,7 +48,7 @@ module nms #(
     logic [COORD_WIDTH-1:0] x_pipe [0:2];
     logic [COORD_WIDTH-1:0] y_pipe [0:2];
 
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             for (int i = 0; i < 3; i++) begin
                 x_pipe[i] <= '0;
@@ -91,7 +91,7 @@ module nms #(
     end
 
     // Output stage
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             keypoint_valid <= 1'b0;
             keypoint_score <= '0;
