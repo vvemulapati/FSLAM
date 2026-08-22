@@ -50,7 +50,7 @@ module fast #(
     // Raster coordinate tracking (accounting for 3-pixel delay to window center)
     logic [11:0] cur_x, cur_y;
 
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             cur_x <= '0;
             cur_y <= '0;
@@ -126,7 +126,7 @@ module fast #(
                          (cur_y >= 3) && (cur_y < IMG_HEIGHT - 3);
 
     // Register outputs
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             corner_valid <= 1'b0;
             corner_score <= '0;

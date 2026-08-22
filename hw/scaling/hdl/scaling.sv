@@ -42,7 +42,7 @@ module scaling #(
     );
 
     // Raster coordinate tracking
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             in_x    <= '0;
             in_y    <= '0;

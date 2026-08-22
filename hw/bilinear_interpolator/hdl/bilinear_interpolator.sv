@@ -55,7 +55,7 @@ module bilinear_interpolator #(
         scaled_sum   = (weighted_sum * 17'd41) + 17'd512;
     end
 
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             valid_out <= 1'b0;
             pixel_out <= '0;

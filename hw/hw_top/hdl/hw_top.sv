@@ -61,7 +61,7 @@ module hw_top #(
     assign enable = control_reg[0];
 
     // AXI4-Lite write transactions
-    always_ff @(posedge aclk or negedge aresetn) begin
+    always_ff @(posedge aclk) begin
         if (!aresetn) begin
             control_reg   <= '0;
             s_axi_awready <= 1'b0;
@@ -100,7 +100,7 @@ module hw_top #(
     logic [31:0] status_reg;
     assign status_reg = {16'h0, total_features[10:0], 4'h0, orb_processing};
 
-    always_ff @(posedge aclk or negedge aresetn) begin
+    always_ff @(posedge aclk) begin
         if (!aresetn) begin
             s_axi_arready <= 1'b0;
             s_axi_rvalid  <= 1'b0;
@@ -139,7 +139,7 @@ module hw_top #(
         pixel_valid = s_axis_tvalid && enable;
     end
 
-    always_ff @(posedge aclk or negedge aresetn) begin
+    always_ff @(posedge aclk) begin
         if (!aresetn) begin
             byte_sel <= '0;
         end else if (pixel_valid) begin
@@ -228,7 +228,7 @@ module hw_top #(
     // Pop next feature from FIFO when serializer is idle
     assign desc_fifo_rd_en = !desc_fifo_empty && !out_busy;
 
-    always_ff @(posedge aclk or negedge aresetn) begin
+    always_ff @(posedge aclk) begin
         if (!aresetn) begin
             out_busy      <= 1'b0;
             out_word_idx  <= '0;
@@ -268,7 +268,7 @@ module hw_top #(
     end
 
     // Frame interrupt upon completion (ORB processing finished and Descriptor FIFO empty)
-    always_ff @(posedge aclk or negedge aresetn) begin
+    always_ff @(posedge aclk) begin
         if (!aresetn) begin
             interrupt <= 1'b0;
         end else begin

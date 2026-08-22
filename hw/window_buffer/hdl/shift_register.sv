@@ -21,7 +21,7 @@ module shift_register #(
 
     logic [REGISTER_WIDTH-1:0] valid_pipe;
 
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             valid_pipe <= '0;
             for (int i = 0; i < REGISTER_WIDTH; i++) begin
