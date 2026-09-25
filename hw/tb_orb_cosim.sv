@@ -29,12 +29,6 @@ module tb_orb_cosim;
     wire                       m_axis_tlast;
     logic                      m_axis_tready;
 
-    // AXI4-Lite Control
-    logic [31:0] s_axi_awaddr, s_axi_wdata, s_axi_araddr;
-    logic        s_axi_awvalid, s_axi_wvalid, s_axi_arvalid;
-    wire         s_axi_awready, s_axi_wready, s_axi_bvalid, s_axi_arready, s_axi_rvalid;
-    wire [1:0]   s_axi_bresp, s_axi_rresp;
-    wire [31:0]  s_axi_rdata;
     wire         interrupt;
 
     // Clock generation (150 MHz = 6.666 ns period)
@@ -58,23 +52,6 @@ module tb_orb_cosim;
         .m_axis_tvalid(m_axis_tvalid),
         .m_axis_tlast(m_axis_tlast),
         .m_axis_tready(m_axis_tready),
-        .s_axi_awaddr(s_axi_awaddr),
-        .s_axi_awvalid(s_axi_awvalid),
-        .s_axi_awready(s_axi_awready),
-        .s_axi_wdata(s_axi_wdata),
-        .s_axi_wstrb(4'hF),
-        .s_axi_wvalid(s_axi_wvalid),
-        .s_axi_wready(s_axi_wready),
-        .s_axi_bresp(s_axi_bresp),
-        .s_axi_bvalid(s_axi_bvalid),
-        .s_axi_bready(1'b1),
-        .s_axi_araddr(s_axi_araddr),
-        .s_axi_arvalid(s_axi_arvalid),
-        .s_axi_arready(s_axi_arready),
-        .s_axi_rdata(s_axi_rdata),
-        .s_axi_rresp(s_axi_rresp),
-        .s_axi_rvalid(s_axi_rvalid),
-        .s_axi_rready(1'b1),
         .interrupt(interrupt)
     );
 
@@ -126,12 +103,6 @@ module tb_orb_cosim;
         s_axis_tvalid = 0;
         s_axis_tlast  = 0;
         m_axis_tready = 1;
-        s_axi_awaddr  = 0;
-        s_axi_wdata   = 0;
-        s_axi_awvalid = 0;
-        s_axi_wvalid  = 0;
-        s_axi_araddr  = 0;
-        s_axi_arvalid = 0;
 
         out_file = $fopen("rtl_features.txt", "w");
 
@@ -159,18 +130,6 @@ module tb_orb_cosim;
         // Reset
         #20;
         rst_n = 1;
-        #20;
-
-        // Enable accelerator via AXI4-Lite
-        $display("[TB] Writing Control Register = 0x1 (Enable Accelerator)");
-        s_axi_awaddr  = 32'h00;
-        s_axi_wdata   = 32'h01;
-        s_axi_awvalid = 1;
-        s_axi_wvalid  = 1;
-        @(posedge clk);
-        while (!s_axi_awready) @(posedge clk);
-        s_axi_awvalid = 0;
-        s_axi_wvalid  = 0;
         #20;
 
         // Stream pixel words

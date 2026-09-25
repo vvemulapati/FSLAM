@@ -51,14 +51,6 @@ int main(int argc, char** argv) {
     top->s_axis_tvalid = 0;
     top->s_axis_tlast = 0;
     top->m_axis_tready = 1;
-    top->s_axi_awaddr = 0;
-    top->s_axi_wdata = 0;
-    top->s_axi_awvalid = 0;
-    top->s_axi_wvalid = 0;
-    top->s_axi_araddr = 0;
-    top->s_axi_arvalid = 0;
-    top->s_axi_bready = 1;
-    top->s_axi_rready = 1;
 
     uint64_t main_time = 0;
     auto tick = [&]() {
@@ -74,18 +66,6 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 20; i++) tick();
     top->aresetn = 1;
     for (int i = 0; i < 20; i++) tick();
-
-    // Enable accelerator via AXI4-Lite (Reg 0x00 = 1)
-    std::cout << "[TB] Enabling accelerator via AXI4-Lite..." << std::endl;
-    top->s_axi_awaddr = 0x00;
-    top->s_axi_wdata = 0x01;
-    top->s_axi_awvalid = 1;
-    top->s_axi_wvalid = 1;
-    while (!top->s_axi_awready) tick();
-    tick();
-    top->s_axi_awvalid = 0;
-    top->s_axi_wvalid = 0;
-    for (int i = 0; i < 10; i++) tick();
 
     // Streaming pixels & packet capture
     std::cout << "[TB] Streaming pixels and capturing features..." << std::endl;

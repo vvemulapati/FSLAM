@@ -32,21 +32,12 @@ set_false_path -from [get_ports aresetn]
 # ------------------------------------------------------------------------------
 # Assuming 30% of clock period (~2.0 ns at 150 MHz) for setup budget on SoC bus
 
-# AXI-Stream & AXI-Lite Inputs
+# AXI-Stream Inputs
 set_input_delay -clock [get_clocks aclk] -max 2.000 [get_ports { \
     s_axis_tdata[*] \
     s_axis_tvalid \
     s_axis_tlast \
     m_axis_tready \
-    s_axi_awaddr[*] \
-    s_axi_awvalid \
-    s_axi_wdata[*] \
-    s_axi_wstrb[*] \
-    s_axi_wvalid \
-    s_axi_bready \
-    s_axi_araddr[*] \
-    s_axi_arvalid \
-    s_axi_rready \
 }]
 
 set_input_delay -clock [get_clocks aclk] -min 0.500 [get_ports { \
@@ -54,31 +45,14 @@ set_input_delay -clock [get_clocks aclk] -min 0.500 [get_ports { \
     s_axis_tvalid \
     s_axis_tlast \
     m_axis_tready \
-    s_axi_awaddr[*] \
-    s_axi_awvalid \
-    s_axi_wdata[*] \
-    s_axi_wstrb[*] \
-    s_axi_wvalid \
-    s_axi_bready \
-    s_axi_araddr[*] \
-    s_axi_arvalid \
-    s_axi_rready \
 }]
 
-# AXI-Stream & AXI-Lite Outputs
+# AXI-Stream & Interrupt Outputs
 set_output_delay -clock [get_clocks aclk] -max 2.000 [get_ports { \
     s_axis_tready \
     m_axis_tdata[*] \
     m_axis_tvalid \
     m_axis_tlast \
-    s_axi_awready \
-    s_axi_wready \
-    s_axi_bresp[*] \
-    s_axi_bvalid \
-    s_axi_arready \
-    s_axi_rdata[*] \
-    s_axi_rresp[*] \
-    s_axi_rvalid \
     interrupt \
 }]
 
@@ -87,14 +61,6 @@ set_output_delay -clock [get_clocks aclk] -min 0.500 [get_ports { \
     m_axis_tdata[*] \
     m_axis_tvalid \
     m_axis_tlast \
-    s_axi_awready \
-    s_axi_wready \
-    s_axi_bresp[*] \
-    s_axi_bvalid \
-    s_axi_arready \
-    s_axi_rdata[*] \
-    s_axi_rresp[*] \
-    s_axi_rvalid \
     interrupt \
 }]
 

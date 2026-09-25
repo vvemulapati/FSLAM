@@ -23,7 +23,7 @@
 // =============================================================================
 module descriptor_fifo_ram #(
     parameter int DATA_WIDTH = 304,
-    parameter int DEPTH      = 256,
+    parameter int DEPTH      = 16,
     parameter int ADDR_WIDTH = (DEPTH > 1) ? $clog2(DEPTH) : 1,
     parameter     RAM_STYLE  = "block" // "block", "distributed", or "ultra"
 ) (
@@ -64,7 +64,7 @@ endmodule
 // =============================================================================
 module descriptor_fifo #(
     parameter int DATA_WIDTH = 304,
-    parameter int DEPTH      = 256,
+    parameter int DEPTH      = 16,
     parameter int ADDR_WIDTH = (DEPTH > 1) ? $clog2(DEPTH) : 1,
     parameter     RAM_STYLE  = "block"
 ) (

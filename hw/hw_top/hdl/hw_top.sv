@@ -4,7 +4,6 @@
 //              Interfaces:
 //                - AXI4-Stream Slave : Incoming DMA pixel stream
 //                - AXI4-Stream Master: Outgoing extracted feature packets
-//                - AXI4-Lite Slave   : Control/Status registers & feature thresholding
 //------------------------------------------------------------------------------
 
 `timescale 1ns / 1ps
@@ -31,60 +30,9 @@ module hw_top #(
     output logic                      m_axis_tlast,
     input  logic                      m_axis_tready,
 
-    // AXI4-Lite Slave: Control & Status Register Interface
-    input  logic [31:0]               s_axi_awaddr,
-    input  logic                      s_axi_awvalid,
-    output logic                      s_axi_awready,
-    input  logic [31:0]               s_axi_wdata,
-    input  logic [3:0]                s_axi_wstrb,
-    input  logic                      s_axi_wvalid,
-    output logic                      s_axi_wready,
-    output logic [1:0]                s_axi_bresp,
-    output logic                      s_axi_bvalid,
-    input  logic                      s_axi_bready,
-
-    input  logic [31:0]               s_axi_araddr,
-    input  logic                      s_axi_arvalid,
-    output logic                      s_axi_arready,
-    output logic [31:0]               s_axi_rdata,
-    output logic [1:0]                s_axi_rresp,
-    output logic                      s_axi_rvalid,
-    input  logic                      s_axi_rready,
-
     // Interrupt output to ARM CPU upon frame completion
     output logic                      interrupt
 );
-
-    // Control & Status Registers
-    logic [31:0] control_reg;
-    logic        enable;
-    assign enable = control_reg[0];
-
-    // AXI4-Lite write transactions
-    always_ff @(posedge aclk) begin
-        if (!aresetn) begin
-            control_reg   <= '0;
-            s_axi_awready <= 1'b0;
-            s_axi_wready  <= 1'b0;
-            s_axi_bvalid  <= 1'b0;
-            s_axi_bresp   <= 2'b00;
-        end else begin
-            if (s_axi_awvalid && s_axi_wvalid && !s_axi_bvalid) begin
-                s_axi_awready <= 1'b1;
-                s_axi_wready  <= 1'b1;
-                if (s_axi_awaddr[7:0] == 8'h00) begin
-                    control_reg <= s_axi_wdata;
-                end
-                s_axi_bvalid <= 1'b1;
-            end else begin
-                s_axi_awready <= 1'b0;
-                s_axi_wready  <= 1'b0;
-                if (s_axi_bready) begin
-                    s_axi_bvalid <= 1'b0;
-                end
-            end
-        end
-    end
 
     // ORB feature signals
     logic feature_valid;
@@ -95,34 +43,6 @@ module hw_top #(
     logic [1:0]  feature_level;
     logic        orb_processing;
     logic [10:0] total_features;
-
-    // Status register reading
-    logic [31:0] status_reg;
-    assign status_reg = {16'h0, total_features[10:0], 4'h0, orb_processing};
-
-    always_ff @(posedge aclk) begin
-        if (!aresetn) begin
-            s_axi_arready <= 1'b0;
-            s_axi_rvalid  <= 1'b0;
-            s_axi_rdata   <= '0;
-            s_axi_rresp   <= 2'b00;
-        end else begin
-            if (s_axi_arvalid && !s_axi_rvalid) begin
-                s_axi_arready <= 1'b1;
-                s_axi_rvalid  <= 1'b1;
-                case (s_axi_araddr[7:0])
-                    8'h00: s_axi_rdata <= control_reg;
-                    8'h04: s_axi_rdata <= status_reg;
-                    default: s_axi_rdata <= '0;
-                endcase
-            end else begin
-                s_axi_arready <= 1'b0;
-                if (s_axi_rready) begin
-                    s_axi_rvalid <= 1'b0;
-                end
-            end
-        end
-    end
 
     // Pixel Stream Unpacking (4 pixels per 32-bit AXI word: 6-bit per pixel)
     logic [1:0] byte_sel;
@@ -136,7 +56,7 @@ module hw_top #(
             2'b10: pixel_in = s_axis_tdata[21:16];
             2'b11: pixel_in = s_axis_tdata[29:24];
         endcase
-        pixel_valid = s_axis_tvalid && enable;
+        pixel_valid = s_axis_tvalid;
     end
 
     always_ff @(posedge aclk) begin
@@ -147,7 +67,7 @@ module hw_top #(
         end
     end
 
-    assign s_axis_tready = enable && (byte_sel == 2'b11 || !s_axis_tvalid);
+    assign s_axis_tready = (byte_sel == 2'b11 || !s_axis_tvalid);
 
     // Official standard OpenCV 256-pair ORB test coordinate pattern (bit_pattern_31_)
     logic signed [5:0] brief_pattern [0:255][0:3];
@@ -164,7 +84,7 @@ module hw_top #(
     ) u_orb (
         .clk(aclk),
         .rst_n(aresetn),
-        .enable(enable),
+        .enable(1'b1),
         .pixel_valid(pixel_valid),
         .pixel_in(pixel_in),
         .brief_pattern(brief_pattern),
@@ -192,7 +112,7 @@ module hw_top #(
     logic         desc_fifo_empty;
     logic         desc_fifo_almost_empty;
     logic         desc_fifo_underflow;
-    logic [8:0]   desc_fifo_count;
+    logic [4:0]   desc_fifo_count;
 
     // Pack: [303:48]=descriptor, [47:32]=score, [31:20]=y, [19:8]=x, [7:2]=orientation, [1:0]=level
     assign desc_fifo_wr_en = feature_valid;
@@ -200,7 +120,7 @@ module hw_top #(
 
     descriptor_fifo #(
         .DATA_WIDTH(304),
-        .DEPTH(256)
+        .DEPTH(16)
     ) u_descriptor_fifo (
         .clk(aclk),
         .rst_n(aresetn),
