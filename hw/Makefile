@@ -1,10 +1,8 @@
-#-------------------------------------------------------------------------------
-# Makefile for FSLAM ORB Accelerator RTL Simulation & Verification
-#-------------------------------------------------------------------------------
+# Simulation targets for the FSLAM RTL (VCS, Verilator, co-sim). See 'make help'.
 
 SHELL := /bin/bash
 
-# Tool Paths
+# Tools
 VCS             ?= vcs
 VERDI           ?= verdi
 VERILATOR_BIN   ?= /tools/veripool/verilator/4-020/bin/verilator
@@ -19,13 +17,13 @@ VERILATOR_DIR   := obj_dir_verilator
 VERILATOR_EXE   := $(VERILATOR_DIR)/Vhw_top
 HEX_STIMULUS    := input_pixels.hex
 
-# VCS Flags
+# VCS flags
 VCS_FLAGS       := -full64 -sverilog +v2k -timescale=1ns/1ps -f $(RTL_FILELIST) $(TB_SV) -o $(SIMV_VCS)
 VCS_DEBUG_FLAGS := $(VCS_FLAGS) -debug_access+all -kdb -lca
 VCS_FSDB_FLAGS  := $(VCS_DEBUG_FLAGS) +define+DUMP_FSDB
 VCS_VCD_FLAGS   := $(VCS_FLAGS) +define+DUMP_VCD
 
-# Verilator Flags
+# Verilator flags
 VLT_FLAGS       := --cc -Wall -Wno-fatal \
                    -Wno-DECLFILENAME -Wno-UNOPTFLAT -Wno-WIDTH -Wno-PINMISSING \
                    -Wno-UNUSED -Wno-CASEINCOMPLETE -Wno-SYMRSVDWORD -Wno-PINCONNECTEMPTY \
@@ -39,7 +37,7 @@ VLT_FLAGS       := --cc -Wall -Wno-fatal \
 all: vcs verilator
 
 help:
-	@echo "FSLAM RTL Build & Waveform Targets:"
+	@echo "Targets:"
 	@echo "  make vcs            : Compile RTL with Synopsys VCS"
 	@echo "  make sim_vcs        : Run VCS simulation"
 	@echo "  make vcs_fsdb       : Compile RTL with FSDB wave dumping enabled"
@@ -55,7 +53,7 @@ help:
 $(HEX_STIMULUS):
 	python3 ../sw/run_cosim.py .
 
-# VCS Standard Targets
+# VCS
 vcs: $(SIMV_VCS)
 
 $(SIMV_VCS): $(RTL_FILELIST) $(TB_SV)
@@ -64,25 +62,24 @@ $(SIMV_VCS): $(RTL_FILELIST) $(TB_SV)
 sim_vcs: $(SIMV_VCS) $(HEX_STIMULUS)
 	./$(SIMV_VCS)
 
-# VCS FSDB (Verdi) Wave Dumping Targets
+# VCS with FSDB dumping (Verdi)
 vcs_fsdb: $(RTL_FILELIST) $(TB_SV)
 	$(VCS) $(VCS_FSDB_FLAGS)
 
 sim_fsdb: vcs_fsdb $(HEX_STIMULUS)
 	./$(SIMV_VCS)
 
-# VCS VCD (Standard / GTKWave) Wave Dumping Targets
+# VCS with VCD dumping (GTKWave)
 vcs_vcd: $(RTL_FILELIST) $(TB_SV)
 	$(VCS) $(VCS_VCD_FLAGS)
 
 sim_vcd: vcs_vcd $(HEX_STIMULUS)
 	./$(SIMV_VCS)
 
-# Verdi GUI Target
 verdi:
 	$(VERDI) -ssf dump.fsdb -dbdir $(SIMV_VCS).daidir &
 
-# Verilator Targets
+# Verilator
 verilator: $(VERILATOR_EXE)
 
 $(VERILATOR_EXE): $(RTL_FILELIST) $(TB_CPP)
@@ -92,11 +89,9 @@ $(VERILATOR_EXE): $(RTL_FILELIST) $(TB_CPP)
 sim_verilator: $(VERILATOR_EXE) $(HEX_STIMULUS)
 	./$(VERILATOR_EXE) $(HEX_STIMULUS)
 
-# Co-Simulation Target
 cosim:
 	python3 ../sw/run_cosim.py .
 
-# Clean Target
 clean:
 	rm -rf $(SIMV_VCS) $(SIMV_VCS).daidir $(SIMV_VCS)_debug $(SIMV_VCS)_debug.daidir
 	rm -rf $(VERILATOR_DIR) csrc ucli.key vc_hdrs.h DVEfiles verdiLog novas.*

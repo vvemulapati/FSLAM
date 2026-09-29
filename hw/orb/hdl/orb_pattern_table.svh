@@ -1,8 +1,5 @@
-//------------------------------------------------------------------------------
-// File: orb_pattern_table.svh
-// Description: Official standard OpenCV 256-pair learned ORB test coordinate pattern (bit_pattern_31_)
-//              Each entry contains (x1, y1, x2, y2) in 31x31 patch [-13..+12].
-//------------------------------------------------------------------------------
+// ORB test pattern from OpenCV (bit_pattern_31_): 256 pairs of (x1, y1, x2, y2),
+// coordinates in [-13, 12].
 
 always_comb begin
         brief_pattern[  0][0] =  6'sd 8;  brief_pattern[  0][1] = -6'sd 3;  brief_pattern[  0][2] =  6'sd 9;  brief_pattern[  0][3] =  6'sd 5;

@@ -1,15 +1,6 @@
-//------------------------------------------------------------------------------
-// File: feature_extractor.sv
-// Description: Complete single-scale ORB feature extraction pipeline.
-//              Encapsulates:
-//                1. FAST-9 Corner Detector
-//                2. 3x3 Non-Maximum Suppression (NMS)
-//                3. Keypoint FIFO (buffering x, y, score)
-//                4. 7x7 Binomial Gaussian Blur
-//                5. 37x37 Window Buffer on blurred stream
-//                6. Streaming Intensity Centroid Orientation (64 sectors)
-//                7. 256-bit Rotated BRIEF (rBRIEF) Descriptor Generator
-//------------------------------------------------------------------------------
+// Single-scale ORB pipeline: FAST -> 3x3 NMS -> keypoint FIFO -> orientation
+// -> rBRIEF. Orientation and rBRIEF work on a 7x7-blurred copy of the input;
+// rBRIEF samples it through a 37x37 window buffer.
 
 `timescale 1ns / 1ps
 
@@ -46,7 +37,7 @@ module feature_extractor #(
     output logic                                  fifo_empty
 );
 
-    // 1. FAST Detector
+    // FAST
     logic        fast_valid;
     logic [15:0] fast_score;
     logic [11:0] fast_x, fast_y;
@@ -67,7 +58,7 @@ module feature_extractor #(
         .corner_y(fast_y)
     );
 
-    // 2. Non-Maximum Suppression (3x3)
+    // 3x3 non-maximum suppression
     logic        nms_valid;
     logic [15:0] nms_score;
     logic [11:0] nms_x, nms_y;
@@ -89,7 +80,7 @@ module feature_extractor #(
         .keypoint_y(nms_y)
     );
 
-    // 3. Gaussian Blur (7x7 Binomial Filter)
+    // 7x7 blur (input to orientation and rBRIEF)
     logic                   blur_valid;
     logic [PIXEL_WIDTH-1:0] blur_pixel;
 
@@ -107,7 +98,21 @@ module feature_extractor #(
         .pixel_out(blur_pixel)
     );
 
-    // 4. 37x37 Window Buffer for BRIEF Sampling
+    // Delay blurred stream by 1 cycle so u_brief_win_buf aligns with ori_valid
+    logic                   blur_valid_d1;
+    logic [PIXEL_WIDTH-1:0] blur_pixel_d1;
+
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            blur_valid_d1 <= 1'b0;
+            blur_pixel_d1 <= '0;
+        end else begin
+            blur_valid_d1 <= blur_valid;
+            blur_pixel_d1 <= blur_pixel;
+        end
+    end
+
+    // 37x37 window on the blurred stream, sampled by rBRIEF
     logic [PIXEL_WIDTH-1:0] blur_win [36:0][36:0];
     logic                   blur_win_valid;
 
@@ -118,13 +123,13 @@ module feature_extractor #(
     ) u_brief_win_buf (
         .clk(clk),
         .rst_n(rst_n),
-        .in_valid(blur_valid),
-        .in_data(blur_pixel),
+        .in_valid(blur_valid_d1),
+        .in_data(blur_pixel_d1),
         .out_valid(blur_win_valid),
         .win(blur_win)
     );
 
-    // 5. Keypoint FIFO: Buffers (score, x, y) from NMS
+    // Keypoint FIFO: {score, y, x} from NMS
     logic        kp_fifo_full, kp_fifo_empty;
     logic [39:0] kp_fifo_din, kp_fifo_dout;
     logic        kp_fifo_rd_en;
@@ -152,7 +157,7 @@ module feature_extractor #(
         .count(kp_fifo_count)
     );
 
-    // 6. Keypoint Dispatcher Interlock
+    // Dispatch: pop the head keypoint when the 37x37 window center reaches (head_x, head_y)
     logic        ori_busy;
     logic        brief_busy;
     logic        ori_valid;
@@ -163,33 +168,43 @@ module feature_extractor #(
     logic        disp_valid;
     logic [15:0] disp_score;
     logic [11:0] disp_x, disp_y;
-    logic        disp_pending;
 
-    always_comb begin
-        kp_fifo_rd_en = !kp_fifo_empty && !brief_busy && !ori_busy && !disp_pending && !disp_valid && !ori_valid;
-    end
+    logic        ori_win_valid;
+    logic [11:0] ori_win_x, ori_win_y;
+    logic [11:0] head_x, head_y;
+    logic        at_head, past_head;
+
+    assign ori_win_valid = blur_valid && (fast_x >= 12'd18) && (fast_y >= 12'd18);
+    assign ori_win_x     = (fast_x >= 12'd18) ? (fast_x - 12'd18) : 12'd0;
+    assign ori_win_y     = (fast_y >= 12'd18) ? (fast_y - 12'd18) : 12'd0;
+
+    assign head_x        = kp_fifo_dout[11:0];
+    assign head_y        = kp_fifo_dout[23:12];
+
+    assign at_head       = !kp_fifo_empty && ori_win_valid &&
+                           (ori_win_x == head_x) && (ori_win_y == head_y);
+    assign past_head     = !kp_fifo_empty && ori_win_valid &&
+                           ((ori_win_y > head_y) || (ori_win_y == head_y && ori_win_x > head_x));
+
+    assign kp_fifo_rd_en = at_head || past_head;
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            disp_valid   <= 1'b0;
-            disp_score   <= '0;
-            disp_x       <= '0;
-            disp_y       <= '0;
-            disp_pending <= 1'b0;
+            disp_valid <= 1'b0;
+            disp_score <= '0;
+            disp_x     <= '0;
+            disp_y     <= '0;
         end else begin
-            disp_valid <= kp_fifo_rd_en;
-            if (kp_fifo_rd_en) begin
-                disp_score   <= kp_fifo_dout[39:24];
-                disp_y       <= kp_fifo_dout[23:12];
-                disp_x       <= kp_fifo_dout[11:0];
-                disp_pending <= 1'b1;
-            end else if (feature_valid || (!brief_busy && !disp_valid && !ori_valid)) begin
-                disp_pending <= 1'b0;
+            disp_valid <= at_head;
+            if (at_head) begin
+                disp_score <= kp_fifo_dout[39:24];
+                disp_y     <= kp_fifo_dout[23:12];
+                disp_x     <= kp_fifo_dout[11:0];
             end
         end
     end
 
-    // 7. Orientation Calculator
+    // Orientation
     orientation #(
         .PIXEL_WIDTH(PIXEL_WIDTH),
         .WINDOW_SIZE(37),
@@ -212,7 +227,7 @@ module feature_extractor #(
         .busy(ori_busy)
     );
 
-    // 8. rBRIEF Descriptor Generator
+    // rBRIEF
     brief #(
         .PIXEL_WIDTH(PIXEL_WIDTH),
         .WINDOW_SIZE(37),
@@ -239,6 +254,6 @@ module feature_extractor #(
         .busy(brief_busy)
     );
 
-    assign busy = brief_busy || ori_busy || !kp_fifo_empty;
+    assign busy = brief_busy || ori_busy || disp_valid || ori_valid || !kp_fifo_empty;
 
 endmodule

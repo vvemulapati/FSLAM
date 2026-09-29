@@ -1,32 +1,16 @@
 #!/usr/bin/env python3
-"""
-ORB Hardware Reference Model for FSLAM
-======================================
-Bit-accurate Python software reference model mimicking the exact FPGA hardware pipeline
-described in the thesis "ORB-BASED SLAM ACCELERATOR ON SOC FPGA" (UIUC, 2022).
-
-Key Features Implemented:
--------------------------
-1. 6-bit Pixel Quantization (or configurable bit-depth).
-2. 4-level Image Pyramid with 1.2x downsampling (5/6 scale factor with 25 fixed bilinear weights).
-3. FAST-9/16 Corner Detector with Bresenham circle (radius 3) and absolute difference scoring.
-4. 3x3 Non-Maximum Suppression (NMS) with directional tie-breaking.
-5. 7x7 Binomial Gaussian Blur (separable / sum=4096, normalized via >> 12).
-6. Intensity Centroid Moments (m00, m01, m10) on a 37x37 window.
-7. 64-sector Orientation Discretization using quadrant mapping and tangent comparator thresholds.
-8. Rotated BRIEF-256 Descriptor Generator on a 37x37 patch with Q1.7 sin/cos LUTs.
-9. Hamming Distance Feature Matcher with thresholding.
-
-This model serves as a golden reference for hardware verification and simulation.
+"""Python model of the FSLAM ORB pipeline, used as the reference for RTL
+co-simulation. Follows the pipeline in the thesis "ORB-BASED SLAM ACCELERATOR
+ON SOC FPGA" (UIUC, 2022): 6-bit pixels, 4-level 5/6 pyramid, FAST-9, 3x3 NMS,
+7x7 binomial blur, 64-sector intensity-centroid orientation, 256-bit rBRIEF
+and a Hamming-distance matcher.
 """
 
 import math
 import struct
 from typing import List, Tuple, Dict, Any, Optional
 
-# ==============================================================================
-# Hardware Constants & Lookup Tables
-# ==============================================================================
+# Constants and lookup tables
 
 # 7x7 Binomial 2D Gaussian Kernel (outer product of [1, 6, 15, 20, 15, 6, 1])
 BINOMIAL_KERNEL_7X7 = [
@@ -48,24 +32,24 @@ BRESENHAM_CIRCLE_OFFSETS = [
     ( 0, -3), (-1, -3), (-2, -2), (-3, -1),
 ]
 
-# 15 Tangent Threshold Multipliers (tan(θ) * 256) for 16 sectors per quadrant
-# Discretizes 90 degrees into 16 sectors (5.625° intervals)
+# 15 tangent thresholds (tan(theta) * 256), 16 sectors per quadrant
+# (5.625 deg per sector)
 TAN_THRESH_15 = [
-    25,   #  5.625° (tan=0.09849)
-    51,   # 11.250° (tan=0.19891)
-    78,   # 16.875° (tan=0.30335)
-    106,  # 22.500° (tan=0.41421)
-    137,  # 28.125° (tan=0.53451)
-    171,  # 33.750° (tan=0.66818)
-    210,  # 39.375° (tan=0.82065)
-    256,  # 45.000° (tan=1.00000)
-    312,  # 50.625° (tan=1.21850)
-    383,  # 56.250° (tan=1.49661)
-    479,  # 61.875° (tan=1.87093)
-    618,  # 67.500° (tan=2.41421)
-    844,  # 73.125° (tan=3.29703)
-    1287, # 78.750° (tan=5.02734)
-    2599  # 84.375° (tan=10.1532)
+    25,   #  5.625 deg (tan=0.09849)
+    51,   # 11.250 deg (tan=0.19891)
+    78,   # 16.875 deg (tan=0.30335)
+    106,  # 22.500 deg (tan=0.41421)
+    137,  # 28.125 deg (tan=0.53451)
+    171,  # 33.750 deg (tan=0.66818)
+    210,  # 39.375 deg (tan=0.82065)
+    256,  # 45.000 deg (tan=1.00000)
+    312,  # 50.625 deg (tan=1.21850)
+    383,  # 56.250 deg (tan=1.49661)
+    479,  # 61.875 deg (tan=1.87093)
+    618,  # 67.500 deg (tan=2.41421)
+    844,  # 73.125 deg (tan=3.29703)
+    1287, # 78.750 deg (tan=5.02734)
+    2599  # 84.375 deg (tan=10.1532)
 ]
 
 # 64-sector Cosine and Sine LUTs (Q1.7 fixed point, range -127 to +127)
@@ -91,8 +75,8 @@ SIN_LUT_64 = [
     -71, -60, -49, -37, -25, -12, 0, 0
 ]
 
-# Official standard OpenCV 256-pair learned ORB test coordinate pattern (bit_pattern_31_)
-# Each entry contains (x1, y1, x2, y2) in 31x31 patch [-13..+12].
+# ORB test pattern from OpenCV (bit_pattern_31_): 256 pairs of (x1, y1, x2, y2),
+# coordinates in [-13, 12].
 OPENCV_ORB_PATTERN_256 = [
     (  8,  -3,   9,   5),
     (  4,   2,   7, -12),
@@ -356,9 +340,7 @@ DEFAULT_BRIEF_PATTERN = OPENCV_ORB_PATTERN_256
 
 
 
-# ==============================================================================
-# Feature & Keypoint Data Structures
-# ==============================================================================
+# Data structures
 
 class Keypoint:
     def __init__(self, x: int, y: int, score: int, level: int, angle_sector: int = 0):
@@ -373,9 +355,7 @@ class Keypoint:
         return f"Keypoint(x={self.x}, y={self.y}, score={self.score}, level={self.level}, angle={self.angle_sector})"
 
 
-# ==============================================================================
-# Pipeline Stages
-# ==============================================================================
+# Pipeline
 
 class ORBHardwareReferenceModel:
     def __init__(
@@ -407,9 +387,7 @@ class ORBHardwareReferenceModel:
         return [[val >> shift for val in row] for row in image_2d]
 
     def scale_down_5_6(self, img: List[List[int]], in_w: int, in_h: int) -> List[List[int]]:
-        """
-        Bit-accurate 5/6 bilinear downsampler.
-        Matches hardware scaling.sv and bilinear_interpolator.sv:
+        """5/6 bilinear downsampler (model of scaling.sv + bilinear_interpolator.sv):
           w00 = (5 - x%6) * (5 - y%6)
           w01 = (x%6)     * (5 - y%6)
           w10 = (5 - x%6) * (y%6)
@@ -518,9 +496,8 @@ class ORBHardwareReferenceModel:
         return scores
 
     def non_maximum_suppression(self, scores: List[List[int]], width: int, height: int, level: int) -> List[Keypoint]:
-        """
-        3x3 Non-Maximum Suppression with hardware-aligned tie-breaking.
-        Strict > for top/left neighbors, >= for right/bottom neighbors.
+        """3x3 NMS: strict > against top/left neighbors, >= against right/bottom
+        (same tie-break as nms.sv).
         """
         keypoints = []
         for y in range(1, height - 1):
@@ -547,9 +524,9 @@ class ORBHardwareReferenceModel:
         return keypoints
 
     def compute_orientation(self, blurred_img: List[List[int]], width: int, height: int, kpt: Keypoint) -> int:
-        """
-        37x37 Intensity Centroid Orientation discretized into 64 sectors (0..63).
-        Matches hardware orientation.sv using quadrant mapping and 15 tangent comparators.
+        """Intensity-centroid orientation over a 37x37 window, quantized to 64
+        sectors (0-63) with quadrant signs and 15 tangent thresholds, as in
+        orientation.sv.
         """
         win_size = 37
         half_win = win_size // 2  # 18
@@ -605,9 +582,8 @@ class ORBHardwareReferenceModel:
         height: int,
         kpt: Keypoint
     ) -> int:
-        """
-        Generates 256-bit Rotated BRIEF descriptor using 64-sector Q1.7 sin/cos LUTs.
-        Matches hardware brief.sv and rotator.sv.
+        """256-bit rBRIEF descriptor using the 64-sector Q1.7 sin/cos tables, as in
+        brief.sv.
         """
         angle = kpt.angle_sector
         cos_val = COS_LUT_64[angle]
@@ -626,8 +602,8 @@ class ORBHardwareReferenceModel:
             px2 = kpt.x + rot_x2
             py2 = kpt.y + rot_y2
 
-            val1 = blurred_img[py1][px1] if (0 <= px1 < width and 0 <= py1 < height) else 0
-            val2 = blurred_img[py2][px2] if (0 <= px2 < width and 0 <= py2 < height) else 0
+            val1 = blurred_img[py1][px1] if (-18 <= rot_x1 <= 18 and -18 <= rot_y1 <= 18 and 0 <= px1 < width and 0 <= py1 < height) else 0
+            val2 = blurred_img[py2][px2] if (-18 <= rot_x2 <= 18 and -18 <= rot_y2 <= 18 and 0 <= px2 < width and 0 <= py2 < height) else 0
 
             if val1 > val2:
                 descriptor |= (1 << bit_idx)
@@ -635,10 +611,7 @@ class ORBHardwareReferenceModel:
         return descriptor
 
     def extract_features(self, raw_image_2d: List[List[int]]) -> List[Keypoint]:
-        """
-        Full end-to-end ORB feature extraction pipeline:
-        Quantize -> Pyramid -> Blur -> FAST -> NMS -> Orientation -> BRIEF.
-        """
+        """Quantize -> pyramid -> blur -> FAST -> NMS -> orientation -> BRIEF."""
         quantized = self.quantize_image(raw_image_2d)
         pyramid = self.build_image_pyramid(quantized)
 
@@ -666,9 +639,7 @@ class ORBHardwareReferenceModel:
         return all_keypoints
 
 
-# ==============================================================================
-# Hamming Distance Matcher
-# ==============================================================================
+# Matching
 
 def popcount256(val: int) -> int:
     """Computes population count (Hamming weight) of a 256-bit integer."""
@@ -698,9 +669,7 @@ def match_features(
     return matches
 
 
-# ==============================================================================
-# Helper Utilities & Self-Test
-# ==============================================================================
+# Test image and self-test
 
 def generate_synthetic_image(width: int = 640, height: int = 480) -> List[List[int]]:
     """Generates a synthetic test image with high-contrast geometric corners."""
@@ -723,9 +692,7 @@ def generate_synthetic_image(width: int = 640, height: int = 480) -> List[List[i
 
 
 if __name__ == "__main__":
-    print("=================================================================")
-    print(" Running FSLAM ORB Hardware Reference Model Self-Test")
-    print("=================================================================")
+    print("Reference model self-test")
 
     model = ORBHardwareReferenceModel(
         pixel_depth=6,
@@ -736,10 +703,10 @@ if __name__ == "__main__":
     )
 
     test_img = generate_synthetic_image(640, 480)
-    print(f"[1] Generated synthetic test image: {len(test_img[0])}x{len(test_img)}")
+    print(f"Test image: {len(test_img[0])}x{len(test_img)}")
 
     features = model.extract_features(test_img)
-    print(f"[2] Extracted total features: {len(features)}")
+    print(f"Features: {len(features)}")
 
     # Group features by pyramid level
     by_level = {}
@@ -751,17 +718,15 @@ if __name__ == "__main__":
 
     if features:
         sample = features[0]
-        print(f"[3] Sample Feature 0:")
+        print("First feature:")
         print(f"    - Level: {sample.level}")
         print(f"    - Coord: ({sample.x}, {sample.y})")
         print(f"    - Score: {sample.score}")
-        print(f"    - Orientation Sector: {sample.angle_sector} ({sample.angle_sector * 5.625:.1f}°)")
+        print(f"    - Orientation Sector: {sample.angle_sector} ({sample.angle_sector * 5.625:.1f} deg)")
         print(f"    - Descriptor (Hex): 0x{sample.descriptor:064x}")
 
         # Self-matching test
         matches = match_features(features[:20], features[:20], threshold=50)
-        print(f"[4] Self-matching test (20 features): {len(matches)} matches found (all distance 0).")
+        print(f"Self-match on the first 20 features: {len(matches)} matches")
 
-    print("=================================================================")
-    print(" Self-Test PASSED Successfully!")
-    print("=================================================================")
+    print("Done.")

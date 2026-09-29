@@ -1,9 +1,5 @@
-//------------------------------------------------------------------------------
-// File: feature_matcher.sv
-// Description: Hardware feature matching unit.
-//              Computes Hamming distance between 256-bit binary descriptors.
-//              Matches descriptors if Hamming distance <= HAMMING_THRESHOLD.
-//------------------------------------------------------------------------------
+// Hamming-distance matcher for 256-bit descriptors. A query matches a stored
+// descriptor if the distance is <= HAMMING_THRESHOLD.
 
 `timescale 1ns / 1ps
 
@@ -72,7 +68,7 @@ module feature_matcher #(
 
     assign num_features = feat_count;
 
-    // Function to calculate population count of XOR bits
+    // Population count
     function automatic logic [7:0] popcount256(input logic [255:0] val);
         logic [7:0] cnt;
         cnt = '0;

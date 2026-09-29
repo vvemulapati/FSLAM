@@ -1,16 +1,9 @@
-//------------------------------------------------------------------------------
-// File: linebuffer.sv
-// Description: Streaming line buffer with explicit 2-Port (Simple Dual-Port)
-//              RAM inference submodule across Xilinx Vivado, Synopsys VCS,
-//              and Intel Quartus.
-//              Delays incoming pixel stream by exactly LINE_WIDTH clock cycles.
-//------------------------------------------------------------------------------
+// Line buffer: delays the input stream by LINE_WIDTH samples (one image row),
+// using a simple dual-port RAM.
 
 `timescale 1ns / 1ps
 
-// =============================================================================
-// Explicit Simple Dual-Port (2-Port) RAM Module for Synthesis Inference
-// =============================================================================
+// Simple dual-port RAM, registered read (1-cycle latency).
 module linebuffer_ram #(
     parameter int DATA_WIDTH = 6,
     parameter int DEPTH      = 640,
@@ -19,31 +12,26 @@ module linebuffer_ram #(
 ) (
     input  logic                  clk,
 
-    // Port A: Synchronous Write Port (No reset on memory elements)
+    // Write port
     input  logic                  wr_en,
     input  logic [ADDR_WIDTH-1:0] wr_addr,
     input  logic [DATA_WIDTH-1:0] wr_data,
 
-    // Port B: Synchronous Read Port (Infers internal BRAM output register)
+    // Read port
     input  logic                  rd_en,
     input  logic [ADDR_WIDTH-1:0] rd_addr,
     output logic [DATA_WIDTH-1:0] rd_data
 );
 
-    // -------------------------------------------------------------------------
-    // Dedicated 2-Port Memory Array
-    // -------------------------------------------------------------------------
     (* ram_style = RAM_STYLE *)
     logic [DATA_WIDTH-1:0] mem_array [0:DEPTH-1];
 
-    // Port A: Dedicated Write Port
     always_ff @(posedge clk) begin
         if (wr_en) begin
             mem_array[wr_addr] <= wr_data;
         end
     end
 
-    // Port B: Dedicated Read Port
     always_ff @(posedge clk) begin
         if (rd_en) begin
             rd_data <= mem_array[rd_addr];
@@ -53,9 +41,6 @@ module linebuffer_ram #(
 endmodule
 
 
-// =============================================================================
-// Top-Level Streaming Line Buffer Controller
-// =============================================================================
 module linebuffer #(
     parameter int DATA_WIDTH = 6,
     parameter int LINE_WIDTH = 640,
@@ -86,9 +71,6 @@ module linebuffer #(
     assign ram_wr_en = in_valid;
     assign ram_rd_en = in_valid;
 
-    // -------------------------------------------------------------------------
-    // Dedicated 2-Port RAM Instance with mem_array
-    // -------------------------------------------------------------------------
     linebuffer_ram #(
         .DATA_WIDTH(DATA_WIDTH),
         .DEPTH(LINE_WIDTH),
@@ -104,46 +86,38 @@ module linebuffer #(
         .rd_data(ram_rdata)
     );
 
-    // -------------------------------------------------------------------------
-    // Address & Control Logic (Synchronous reset)
-    // -------------------------------------------------------------------------
+    // Read/write pointers (rd_ptr stays one slot ahead of wr_ptr so the
+    // synchronous RAM read is already registered when the next sample arrives).
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             wr_ptr      <= '0;
-            rd_ptr      <= '0;
+            rd_ptr      <= ADDR_WIDTH'(1);
             fill_count  <= '0;
             line_filled <= 1'b0;
-            out_valid   <= 1'b0;
-        end else begin
-            out_valid <= in_valid && line_filled;
+        end else if (in_valid) begin
+            if (wr_ptr == ADDR_WIDTH'(LINE_WIDTH - 1)) begin
+                wr_ptr <= '0;
+            end else begin
+                wr_ptr <= wr_ptr + 1'b1;
+            end
 
-            if (in_valid) begin
-                // Advance write pointer
-                if (wr_ptr == LINE_WIDTH - 1) begin
-                    wr_ptr <= '0;
-                end else begin
-                    wr_ptr <= wr_ptr + 1'b1;
-                end
+            if (rd_ptr == ADDR_WIDTH'(LINE_WIDTH - 1)) begin
+                rd_ptr <= '0;
+            end else begin
+                rd_ptr <= rd_ptr + 1'b1;
+            end
 
-                // Track when the line buffer is fully primed (LINE_WIDTH cycles)
-                if (line_filled) begin
-                    if (rd_ptr == LINE_WIDTH - 1) begin
-                        rd_ptr <= '0;
-                    end else begin
-                        rd_ptr <= rd_ptr + 1'b1;
-                    end
+            if (!line_filled) begin
+                if (fill_count == (ADDR_WIDTH+1)'(LINE_WIDTH - 1)) begin
+                    line_filled <= 1'b1;
                 end else begin
-                    if (fill_count == LINE_WIDTH - 1) begin
-                        line_filled <= 1'b1;
-                        rd_ptr      <= '0;
-                    end else begin
-                        fill_count  <= fill_count + 1'b1;
-                    end
+                    fill_count  <= fill_count + 1'b1;
                 end
             end
         end
     end
 
-    assign out_data = ram_rdata;
+    assign out_valid = in_valid && line_filled;
+    assign out_data  = ram_rdata;
 
 endmodule

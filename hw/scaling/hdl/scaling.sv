@@ -1,9 +1,5 @@
-//------------------------------------------------------------------------------
-// File: scaling.sv
-// Description: Streaming 5/6 image downsampler (1.2x reduction).
-//              Uses a 2-row line window buffer and bilinear interpolation.
-//              Outputs resampled pixels every 5 out of 6 cycles in X and Y.
-//------------------------------------------------------------------------------
+// Streaming 5/6 (1.2x) downscaler: 2x2 window plus bilinear interpolation.
+// Emits 5 of every 6 pixels in x and 5 of every 6 rows in y.
 
 `timescale 1ns / 1ps
 
@@ -22,7 +18,9 @@ module scaling #(
 );
 
     logic [11:0] in_x, in_y;
-    logic [2:0]  scale_x, scale_y;
+    logic [2:0]  mod_x, mod_y;
+    logic [11:0] win_x1, win_y1;
+    logic [2:0]  win_frac_x, win_frac_y;
 
     // 2x2 window from window_buffer
     logic [PIXEL_WIDTH-1:0] win [1:0][1:0];
@@ -41,36 +39,50 @@ module scaling #(
         .win(win)
     );
 
-    // Raster coordinate tracking
+    // Raster coordinate tracking aligned with the 1-cycle window_buffer output
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            in_x    <= '0;
-            in_y    <= '0;
-            scale_x <= '0;
-            scale_y <= '0;
+            in_x       <= '0;
+            in_y       <= '0;
+            mod_x      <= '0;
+            mod_y      <= '0;
+            win_x1     <= '0;
+            win_y1     <= '0;
+            win_frac_x <= '0;
+            win_frac_y <= '0;
         end else if (pixel_valid) begin
-            // X coordinate & modulo 6 counter
-            if (in_x == IMG_WIDTH - 1) begin
-                in_x    <= '0;
-                scale_x <= '0;
-                // Y coordinate & modulo 6 counter
-                if (in_y == IMG_HEIGHT - 1) begin
-                    in_y    <= '0;
-                    scale_y <= '0;
+            win_x1     <= in_x;
+            win_y1     <= in_y;
+            win_frac_x <= mod_x;
+            win_frac_y <= mod_y;
+
+            if (in_x == 12'(IMG_WIDTH - 1)) begin
+                in_x  <= '0;
+                mod_x <= '0;
+                if (in_y == 12'(IMG_HEIGHT - 1)) begin
+                    in_y  <= '0;
+                    mod_y <= '0;
+                end else if (in_y == 12'd0) begin
+                    in_y  <= 12'd1;
+                    mod_y <= 3'd0;
                 end else begin
-                    in_y    <= in_y + 1;
-                    scale_y <= (scale_y == 3'd5) ? 3'd0 : scale_y + 1;
+                    in_y  <= in_y + 12'd1;
+                    mod_y <= (mod_y == 3'd5) ? 3'd0 : mod_y + 3'd1;
                 end
+            end else if (in_x == 12'd0) begin
+                in_x  <= 12'd1;
+                mod_x <= 3'd0;
             end else begin
-                in_x    <= in_x + 1;
-                scale_x <= (scale_x == 3'd5) ? 3'd0 : scale_x + 1;
+                in_x  <= in_x + 12'd1;
+                mod_x <= (mod_x == 3'd5) ? 3'd0 : mod_x + 3'd1;
             end
         end
     end
 
-    // Pixel is valid when within active 2x2 window region and not in 6th cycle/row
+    // Valid when the 2x2 window does not wrap across rows/frames and is not on the 6th step
     logic interp_valid_in;
-    assign interp_valid_in = win_valid && (scale_x != 3'd5) && (scale_y != 3'd5) && (in_y >= 1);
+    assign interp_valid_in = win_valid && (win_x1 >= 12'd1) && (win_y1 >= 12'd1) &&
+                             (win_frac_x != 3'd5) && (win_frac_y != 3'd5);
 
     bilinear_interpolator #(
         .PIXEL_WIDTH(PIXEL_WIDTH)
@@ -82,8 +94,8 @@ module scaling #(
         .pixel_01(win[1][0]), // Top-right
         .pixel_10(win[0][1]), // Bottom-left
         .pixel_11(win[0][0]), // Bottom-right
-        .frac_x(scale_x),
-        .frac_y(scale_y),
+        .frac_x(win_frac_x),
+        .frac_y(win_frac_y),
         .valid_out(scaled_valid),
         .pixel_out(pixel_out)
     );

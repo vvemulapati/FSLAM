@@ -1,10 +1,6 @@
-//------------------------------------------------------------------------------
-// File: nms.sv
-// Description: 3x3 Non-Maximum Suppression (NMS) module.
-//              Continuous raster-scan streaming over a 3x3 sliding window.
-//              Outputs keypoint if center score > 0 and greater than all neighbors
-//              (with >= for right/down neighbors to resolve ties).
-//------------------------------------------------------------------------------
+// 3x3 non-maximum suppression on the FAST score stream. Outputs a keypoint if
+// the center score is > 0 and greater than its neighbors (>= against the
+// right/down neighbors, to break ties).
 
 `timescale 1ns / 1ps
 
@@ -44,48 +40,42 @@ module nms #(
         .win(win)
     );
 
-    // Delay coordinates to align with 3x3 window center (1-row + 1-col delay)
-    logic [COORD_WIDTH-1:0] x_pipe [0:2];
-    logic [COORD_WIDTH-1:0] y_pipe [0:2];
+    // Coordinate of bottom-right window entry win[0][0]
+    logic [COORD_WIDTH-1:0] win00_x;
+    logic [COORD_WIDTH-1:0] win00_y;
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            for (int i = 0; i < 3; i++) begin
-                x_pipe[i] <= '0;
-                y_pipe[i] <= '0;
-            end
+            win00_x <= '0;
+            win00_y <= '0;
         end else if (corner_valid_in) begin
-            x_pipe[0] <= corner_x_in;
-            y_pipe[0] <= corner_y_in;
-            for (int i = 1; i < 3; i++) begin
-                x_pipe[i] <= x_pipe[i-1];
-                y_pipe[i] <= y_pipe[i-1];
-            end
+            win00_x <= corner_x_in;
+            win00_y <= corner_y_in;
         end
     end
 
-    // 3x3 local maximum check
+    // 3x3 local maximum check (win[2][2] is top-left, win[0][0] is bottom-right)
     logic [SCORE_WIDTH-1:0] center_score;
     logic is_max;
 
     assign center_score = win[1][1];
 
     always_comb begin
-        is_max = (center_score > 0);
+        is_max = (center_score > 0) && (win00_x >= COORD_WIDTH'(2)) && (win00_y >= COORD_WIDTH'(2));
 
-        // Strict > for top, top-left, left, bottom-left
-        if (center_score <= win[0][0] ||
-            center_score <= win[0][1] ||
-            center_score <= win[0][2] ||
-            center_score <= win[1][0]) begin
+        // Strict > for top-left, top, top-right, left
+        if (center_score <= win[2][2] ||
+            center_score <= win[2][1] ||
+            center_score <= win[2][0] ||
+            center_score <= win[1][2]) begin
             is_max = 1'b0;
         end
 
-        // >= for right, bottom, bottom-right (tie-breaking)
-        if (center_score < win[1][2] ||
-            center_score < win[2][0] ||
-            center_score < win[2][1] ||
-            center_score < win[2][2]) begin
+        // >= for right, bottom-left, bottom, bottom-right (tie-breaking)
+        if (center_score < win[1][0] ||
+            center_score < win[0][2] ||
+            center_score < win[0][1] ||
+            center_score < win[0][0]) begin
             is_max = 1'b0;
         end
     end
@@ -101,8 +91,8 @@ module nms #(
             keypoint_valid <= win_valid && is_max;
             if (win_valid && is_max) begin
                 keypoint_score <= center_score;
-                keypoint_x     <= (x_pipe[1] >= 1) ? (x_pipe[1] - 1) : '0;
-                keypoint_y     <= (y_pipe[1] >= 1) ? (y_pipe[1] - 1) : '0;
+                keypoint_x     <= win00_x - COORD_WIDTH'(1);
+                keypoint_y     <= win00_y - COORD_WIDTH'(1);
             end else begin
                 keypoint_score <= '0;
                 keypoint_x     <= '0;

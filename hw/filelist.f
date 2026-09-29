@@ -1,7 +1,4 @@
-//------------------------------------------------------------------------------
-// File: filelist.f
-// Description: RTL source filelist for FSLAM ORB Accelerator
-//------------------------------------------------------------------------------
+// RTL sources for hw_top
 
 +incdir+linebuffer/hdl
 +incdir+window_buffer/hdl

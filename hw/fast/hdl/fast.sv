@@ -1,11 +1,6 @@
-//------------------------------------------------------------------------------
-// File: fast.sv
-// Description: FAST-9/16 corner detector.
-//              Examines 16 pixels on a Bresenham circle of radius 3 around pixel p.
-//              Declares corner if 9 contiguous circle pixels are all brighter
-//              than p + THRESHOLD or all darker than p - THRESHOLD.
-//              Calculates FAST score as sum of absolute differences.
-//------------------------------------------------------------------------------
+// FAST-9/16 corner detector on a 7x7 window. A pixel is a corner if 9
+// contiguous pixels on the radius-3 circle are all brighter than p + THRESHOLD
+// or all darker than p - THRESHOLD. The score is the sum of absolute differences.
 
 `timescale 1ns / 1ps
 
@@ -47,19 +42,29 @@ module fast #(
         .win(win)
     );
 
-    // Raster coordinate tracking (accounting for 3-pixel delay to window center)
+    // Raster coordinate tracking aligned with the 7x7 window output
     logic [11:0] cur_x, cur_y;
+    logic [11:0] win_x, win_y;
+    logic        pixel_valid_d1;
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            cur_x <= '0;
-            cur_y <= '0;
-        end else if (pixel_valid) begin
-            if (cur_x == IMG_WIDTH - 1) begin
-                cur_x <= '0;
-                cur_y <= (cur_y == IMG_HEIGHT - 1) ? '0 : cur_y + 1;
-            end else begin
-                cur_x <= cur_x + 1;
+            cur_x          <= '0;
+            cur_y          <= '0;
+            win_x          <= '0;
+            win_y          <= '0;
+            pixel_valid_d1 <= 1'b0;
+        end else begin
+            pixel_valid_d1 <= pixel_valid;
+            if (pixel_valid) begin
+                win_x <= cur_x;
+                win_y <= cur_y;
+                if (cur_x == 12'(IMG_WIDTH - 1)) begin
+                    cur_x <= '0;
+                    cur_y <= (cur_y == 12'(IMG_HEIGHT - 1)) ? '0 : cur_y + 12'd1;
+                end else begin
+                    cur_x <= cur_x + 12'd1;
+                end
             end
         end
     end
@@ -98,10 +103,10 @@ module fast #(
     always_comb begin
         score_accum = '0;
         for (int i = 0; i < N_CIRCLE; i++) begin
-            brighter[i] = (circle[i] > (center_pixel + THRESHOLD));
-            darker[i]   = (center_pixel > (circle[i] + THRESHOLD));
+            brighter[i] = ({2'b0, circle[i]} > ({2'b0, center_pixel} + 8'(THRESHOLD)));
+            darker[i]   = ({2'b0, center_pixel} > ({2'b0, circle[i]} + 8'(THRESHOLD)));
 
-            diff[i]     = (circle[i] > center_pixel) ? (circle[i] - center_pixel) : (center_pixel - circle[i]);
+            diff[i]     = (circle[i] > center_pixel) ? {10'b0, circle[i] - center_pixel} : {10'b0, center_pixel - circle[i]};
             score_accum += diff[i];
         end
     end
@@ -120,10 +125,13 @@ module fast #(
         end
     end
 
-    // Valid interior region (margin of 3 pixels)
+    // Emit one score per pixel once the window center reaches (0, 0), zeroing
+    // the 3-pixel border so the downstream NMS line buffers stay aligned.
+    logic center_valid;
     logic in_interior;
-    assign in_interior = (cur_x >= 3) && (cur_x < IMG_WIDTH - 3) &&
-                         (cur_y >= 3) && (cur_y < IMG_HEIGHT - 3);
+
+    assign center_valid = pixel_valid_d1 && ((win_y > 12'd3) || (win_y == 12'd3 && win_x >= 12'd3));
+    assign in_interior  = win_valid && (win_x >= 12'd6) && (win_y >= 12'd6);
 
     // Register outputs
     always_ff @(posedge clk) begin
@@ -133,10 +141,12 @@ module fast #(
             corner_x     <= '0;
             corner_y     <= '0;
         end else begin
-            corner_valid <= win_valid && in_interior;
-            corner_score <= (win_valid && in_interior && is_corner) ? score_accum : 16'd0;
-            corner_x     <= (cur_x >= 3) ? (cur_x - 3) : '0;
-            corner_y     <= (cur_y >= 3) ? (cur_y - 3) : '0;
+            corner_valid <= center_valid;
+            corner_score <= (center_valid && in_interior && is_corner) ? score_accum : 16'd0;
+            if (center_valid) begin
+                corner_x <= (win_x >= 12'd3) ? (win_x - 12'd3) : (win_x + 12'(IMG_WIDTH - 3));
+                corner_y <= (win_x >= 12'd3) ? (win_y - 12'd3) : (win_y - 12'd4);
+            end
         end
     end
 

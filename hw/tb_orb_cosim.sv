@@ -1,8 +1,5 @@
-//------------------------------------------------------------------------------
-// File: tb_orb_cosim.sv
-// Description: Co-simulation testbench for validating RTL feature extraction
-//              against the golden Python reference model.
-//------------------------------------------------------------------------------
+// VCS testbench: streams input_pixels.hex into hw_top and writes the output
+// features to rtl_features.txt for comparison with the Python reference model.
 
 `timescale 1ns / 1ps
 
@@ -29,12 +26,6 @@ module tb_orb_cosim;
     wire                       m_axis_tlast;
     logic                      m_axis_tready;
 
-    // AXI4-Lite Control
-    logic [31:0] s_axi_awaddr, s_axi_wdata, s_axi_araddr;
-    logic        s_axi_awvalid, s_axi_wvalid, s_axi_arvalid;
-    wire         s_axi_awready, s_axi_wready, s_axi_bvalid, s_axi_arready, s_axi_rvalid;
-    wire [1:0]   s_axi_bresp, s_axi_rresp;
-    wire [31:0]  s_axi_rdata;
     wire         interrupt;
 
     // Clock generation (150 MHz = 6.666 ns period)
@@ -58,23 +49,6 @@ module tb_orb_cosim;
         .m_axis_tvalid(m_axis_tvalid),
         .m_axis_tlast(m_axis_tlast),
         .m_axis_tready(m_axis_tready),
-        .s_axi_awaddr(s_axi_awaddr),
-        .s_axi_awvalid(s_axi_awvalid),
-        .s_axi_awready(s_axi_awready),
-        .s_axi_wdata(s_axi_wdata),
-        .s_axi_wstrb(4'hF),
-        .s_axi_wvalid(s_axi_wvalid),
-        .s_axi_wready(s_axi_wready),
-        .s_axi_bresp(s_axi_bresp),
-        .s_axi_bvalid(s_axi_bvalid),
-        .s_axi_bready(1'b1),
-        .s_axi_araddr(s_axi_araddr),
-        .s_axi_arvalid(s_axi_arvalid),
-        .s_axi_arready(s_axi_arready),
-        .s_axi_rdata(s_axi_rdata),
-        .s_axi_rresp(s_axi_rresp),
-        .s_axi_rvalid(s_axi_rvalid),
-        .s_axi_rready(1'b1),
         .interrupt(interrupt)
     );
 
@@ -126,18 +100,10 @@ module tb_orb_cosim;
         s_axis_tvalid = 0;
         s_axis_tlast  = 0;
         m_axis_tready = 1;
-        s_axi_awaddr  = 0;
-        s_axi_wdata   = 0;
-        s_axi_awvalid = 0;
-        s_axi_wvalid  = 0;
-        s_axi_araddr  = 0;
-        s_axi_arvalid = 0;
 
         out_file = $fopen("rtl_features.txt", "w");
 
-        $display("================================================================");
-        $display(" Starting ORB Hardware Co-Simulation Testbench (VCS)");
-        $display("================================================================");
+        $display("[TB] Start");
 
 `ifdef DUMP_FSDB
         $display("[TB] Dumping FSDB waveforms to dump.fsdb...");
@@ -156,53 +122,40 @@ module tb_orb_cosim;
         num_words = (IMG_WIDTH * IMG_HEIGHT) / 4;
         $display("[TB] Loaded %0d input words (%0d pixels)", num_words, num_words * 4);
 
-        // Reset
-        #20;
-        rst_n = 1;
-        #20;
+        // Synchronous reset
+        repeat (4) @(posedge clk);
+        rst_n <= 1'b1;
+        repeat (4) @(posedge clk);
 
-        // Enable accelerator via AXI4-Lite
-        $display("[TB] Writing Control Register = 0x1 (Enable Accelerator)");
-        s_axi_awaddr  = 32'h00;
-        s_axi_wdata   = 32'h01;
-        s_axi_awvalid = 1;
-        s_axi_wvalid  = 1;
-        @(posedge clk);
-        while (!s_axi_awready) @(posedge clk);
-        s_axi_awvalid = 0;
-        s_axi_wvalid  = 0;
-        #20;
-
-        // Stream pixel words
+        // Stream pixel words using standard AXI4-Stream handshake
         $display("[TB] Streaming image pixels into AXI4-Stream slave...");
         for (int i = 0; i < num_words; i++) begin
-            @(posedge clk);
-            while (!s_axis_tready) @(posedge clk);
-            s_axis_tdata  = pixel_mem[i];
-            s_axis_tvalid = 1'b1;
-            s_axis_tlast  = (i == num_words - 1);
+            s_axis_tdata  <= pixel_mem[i];
+            s_axis_tvalid <= 1'b1;
+            s_axis_tlast  <= (i == num_words - 1);
+            do begin
+                @(posedge clk);
+            end while (!(s_axis_tvalid && s_axis_tready));
         end
-        @(posedge clk);
-        s_axis_tvalid = 1'b0;
-        s_axis_tlast  = 1'b0;
+        s_axis_tvalid <= 1'b0;
+        s_axis_tlast  <= 1'b0;
+        s_axis_tdata  <= '0;
 
-        // Wait for pipeline and descriptor FIFO drain
-        $display("[TB] All pixels streamed. Draining pipeline and descriptor FIFO...");
+        // Wait for frame completion interrupt
+        $display("[TB] All pixels streamed. Waiting for interrupt...");
         fork
             begin
-                #1000;
-                while (dut.orb_processing || !dut.u_descriptor_fifo.empty || dut.out_busy) @(posedge clk);
-                #200;
+                while (!interrupt) @(posedge clk);
+                repeat (10) @(posedge clk);
             end
             begin
                 #500000; // Timeout watchdog
+                $display("[TB] ERROR: Timeout waiting for interrupt");
             end
         join_any
 
         $fclose(out_file);
-        $display("================================================================");
-        $display("[TB] Simulation Complete! Total RTL Features Extracted: %0d", rtl_feature_count);
-        $display("================================================================");
+        $display("[TB] Done: %0d features", rtl_feature_count);
         $finish;
     end
 

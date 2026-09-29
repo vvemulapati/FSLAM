@@ -1,11 +1,5 @@
-//------------------------------------------------------------------------------
-// File: image_pyramid.sv
-// Description: Multi-level image pyramid generator with 1.2x downscaling (5/6 factor).
-//              Level 0: 640x480 (Original)
-//              Level 1: 533x400
-//              Level 2: 444x333
-//              Level 3: 370x278
-//------------------------------------------------------------------------------
+// 4-level image pyramid, 5/6 scale per level:
+// 640x480, 533x400, 444x333, 370x277.
 
 `timescale 1ns / 1ps
 
@@ -29,7 +23,7 @@ module image_pyramid #(
 
     // Dimensions for each level
     localparam int WIDTHS  [0:3] = '{640, 533, 444, 370};
-    localparam int HEIGHTS [0:3] = '{480, 400, 333, 278};
+    localparam int HEIGHTS [0:3] = '{480, 400, 333, 277};
 
     // Level 0: direct passthrough
     assign level_valid[0]   = pixel_valid;

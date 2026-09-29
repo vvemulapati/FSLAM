@@ -1,10 +1,6 @@
-//------------------------------------------------------------------------------
-// File: bilinear_interpolator.sv
-// Description: Bilinear interpolator for 5/6 (1.2x) downsampling.
-//              Computes weighted sum of 2x2 neighborhood based on (x%6, y%6).
-//              Normalizes by dividing by 25 using fixed-point multiplication:
-//              pixel_out = (weighted_sum * 41 + 512) >> 10
-//------------------------------------------------------------------------------
+// Bilinear interpolation for the 5/6 (1.2x) downscaler. The 2x2 weights come
+// from (x % 6, y % 6) and sum to 25; the divide by 25 is done as
+// (weighted_sum * 41 + 512) >> 10.
 
 `timescale 1ns / 1ps
 
@@ -52,7 +48,7 @@ module bilinear_interpolator #(
 
         weighted_sum = wp00 + wp01 + wp10 + wp11;
         // Fixed-point division by 25: (weighted_sum * 41 + 512) >> 10
-        scaled_sum   = (weighted_sum * 17'd41) + 17'd512;
+        scaled_sum   = (PIXEL_WIDTH+17)'(weighted_sum * 6'd41) + (PIXEL_WIDTH+17)'(512);
     end
 
     always_ff @(posedge clk) begin

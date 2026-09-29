@@ -1,8 +1,5 @@
-//------------------------------------------------------------------------------
-// File: tb_verilator.cpp
-// Description: High-speed C++ testbench for running the FSLAM ORB accelerator
-//              compiled with Verilator.
-//------------------------------------------------------------------------------
+// Verilator testbench for hw_top: streams input_pixels.hex and writes the
+// output features to rtl_features_verilator.txt.
 
 #include <iostream>
 #include <fstream>
@@ -36,9 +33,6 @@ int main(int argc, char** argv) {
     }
     infile.close();
 
-    std::cout << "================================================================" << std::endl;
-    std::cout << " Running ORB Accelerator on Verilator (C++ Cycle-Accurate Model)" << std::endl;
-    std::cout << "================================================================" << std::endl;
     std::cout << "[TB] Loaded " << pixel_words.size() << " 32-bit pixel words ("
               << pixel_words.size() * 4 << " pixels)" << std::endl;
 
@@ -51,14 +45,6 @@ int main(int argc, char** argv) {
     top->s_axis_tvalid = 0;
     top->s_axis_tlast = 0;
     top->m_axis_tready = 1;
-    top->s_axi_awaddr = 0;
-    top->s_axi_wdata = 0;
-    top->s_axi_awvalid = 0;
-    top->s_axi_wvalid = 0;
-    top->s_axi_araddr = 0;
-    top->s_axi_arvalid = 0;
-    top->s_axi_bready = 1;
-    top->s_axi_rready = 1;
 
     uint64_t main_time = 0;
     auto tick = [&]() {
@@ -71,21 +57,9 @@ int main(int argc, char** argv) {
     };
 
     // Reset sequence
-    for (int i = 0; i < 20; i++) tick();
+    for (int i = 0; i < 4; i++) tick();
     top->aresetn = 1;
-    for (int i = 0; i < 20; i++) tick();
-
-    // Enable accelerator via AXI4-Lite (Reg 0x00 = 1)
-    std::cout << "[TB] Enabling accelerator via AXI4-Lite..." << std::endl;
-    top->s_axi_awaddr = 0x00;
-    top->s_axi_wdata = 0x01;
-    top->s_axi_awvalid = 1;
-    top->s_axi_wvalid = 1;
-    while (!top->s_axi_awready) tick();
-    tick();
-    top->s_axi_awvalid = 0;
-    top->s_axi_wvalid = 0;
-    for (int i = 0; i < 10; i++) tick();
+    for (int i = 0; i < 4; i++) tick();
 
     // Streaming pixels & packet capture
     std::cout << "[TB] Streaming pixels and capturing features..." << std::endl;
@@ -93,22 +67,35 @@ int main(int argc, char** argv) {
     int packet_word_idx = 0;
     uint32_t captured_packet[10] = {0};
     int extracted_features = 0;
+    uint64_t cycle_count = 0;
+    const uint64_t max_cycles = 1000000;
 
-    while (word_send_idx < pixel_words.size() || main_time < 3000000) {
-        // Feed AXI-Stream slave
+    while ((word_send_idx < pixel_words.size() || !top->__SYM__interrupt) &&
+           cycle_count < max_cycles) {
         if (word_send_idx < pixel_words.size()) {
             top->s_axis_tdata = pixel_words[word_send_idx];
             top->s_axis_tvalid = 1;
             top->s_axis_tlast = (word_send_idx == pixel_words.size() - 1);
-            if (top->s_axis_tready) {
-                word_send_idx++;
-            }
         } else {
+            top->s_axis_tdata = 0;
             top->s_axis_tvalid = 0;
             top->s_axis_tlast = 0;
         }
 
-        tick();
+        top->aclk = 0;
+        top->eval();
+        main_time += 5;
+
+        bool axis_handshake = (top->s_axis_tvalid && top->s_axis_tready);
+
+        top->aclk = 1;
+        top->eval();
+        main_time += 5;
+        cycle_count++;
+
+        if (axis_handshake) {
+            word_send_idx++;
+        }
 
         // Capture AXI-Stream master feature packets
         if (top->m_axis_tvalid && top->m_axis_tready) {
@@ -142,10 +129,7 @@ int main(int argc, char** argv) {
     }
 
     outfile.close();
-    std::cout << "================================================================" << std::endl;
-    std::cout << "[TB] Verilator Simulation Complete!" << std::endl;
-    std::cout << "[TB] Total Features Extracted: " << extracted_features << std::endl;
-    std::cout << "================================================================" << std::endl;
+    std::cout << "[TB] Done: " << extracted_features << " features" << std::endl;
 
     delete top;
     return 0;

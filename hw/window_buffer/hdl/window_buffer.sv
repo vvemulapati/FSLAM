@@ -1,8 +1,5 @@
-//------------------------------------------------------------------------------
-// File: window_buffer.sv
-// Description: Generic N×N sliding 2D window buffer. Instantiates (WINDOW_SIZE-1)
-//              line buffers and N shift registers to expose a 2D pixel neighborhood.
-//------------------------------------------------------------------------------
+// WINDOW_SIZE x WINDOW_SIZE sliding window: WINDOW_SIZE-1 line buffers in
+// series plus one shift register per row.
 
 `timescale 1ns / 1ps
 

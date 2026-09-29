@@ -1,14 +1,11 @@
-//------------------------------------------------------------------------------
-// File: orientation.sv
-// Description: Keypoint orientation computation using intensity centroid method.
-//              Operates over a 37x37 window with recursive moment updates:
-//                m00[n+1] = m00[n] + S(Cin) - S(Cout)
-//                m01[n+1] = m01[n] + m01(Cin) - m01(Cout)
-//                m10[n+1] = m10[n] - 18*S(Cin) - 19*S(Cout) + m00[n]
-//              Discretizes angle θ = atan2(m01, m10) into 64 sectors using
-//              quadrant signs and 15 constant tangent comparators.
-//              Pipelining: latches keypoint (x, y, score) to align with orientation_valid.
-//------------------------------------------------------------------------------
+// Keypoint orientation by intensity centroid over a 37x37 window, using running
+// moment updates:
+//   m00[n+1] = m00[n] + S(Cin) - S(Cout)
+//   m01[n+1] = m01[n] + m01(Cin) - m01(Cout)
+//   m10[n+1] = m10[n] + 18*S(Cin) + 19*S(Cout) - m00[n]
+// theta = atan2(m01, m10) is quantized to 64 sectors using the quadrant signs
+// and 15 tangent thresholds. Keypoint x, y and score are passed through with
+// orientation_valid.
 
 `timescale 1ns / 1ps
 
@@ -56,7 +53,17 @@ module orientation #(
         .win(win)
     );
 
-    // Column sum S(Cin) and column moment m01(Cin)
+    logic pixel_valid_d1;
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            pixel_valid_d1 <= 1'b0;
+        end else begin
+            pixel_valid_d1 <= pixel_valid;
+        end
+    end
+
+    // Column sum S(Cin) and column moment m01(Cin).
+    // win[0][0] is bottom-right (dy = +18, dx = +18), win[36][0] is top-right (dy = -18, dx = +18).
     logic signed [15:0] s_cin;
     logic signed [20:0] m01_cin;
 
@@ -64,12 +71,12 @@ module orientation #(
         s_cin   = '0;
         m01_cin = '0;
         for (int y = 0; y < WINDOW_SIZE; y++) begin
-            s_cin   += win[y][0];
-            m01_cin += win[y][0] * (y - (WINDOW_SIZE / 2));
+            s_cin   += 16'($signed({1'b0, win[y][0]}));
+            m01_cin += 21'($signed({1'b0, win[y][0]}) * $signed(7'((WINDOW_SIZE / 2) - y)));
         end
     end
 
-    // Delay line of 37 cycles to produce S(Cout) and m01(Cout)
+    // Delay line of 37 valid steps to produce S(Cout) and m01(Cout)
     logic signed [15:0] s_cout_pipe [0:WINDOW_SIZE-1];
     logic signed [20:0] m01_cout_pipe [0:WINDOW_SIZE-1];
 
@@ -79,7 +86,7 @@ module orientation #(
                 s_cout_pipe[i]   <= '0;
                 m01_cout_pipe[i] <= '0;
             end
-        end else if (pixel_valid) begin
+        end else if (pixel_valid_d1) begin
             s_cout_pipe[0]   <= s_cin;
             m01_cout_pipe[0] <= m01_cin;
             for (int i = 1; i < WINDOW_SIZE; i++) begin
@@ -93,61 +100,67 @@ module orientation #(
     wire signed [20:0] m01_cout = m01_cout_pipe[WINDOW_SIZE-1];
 
     // Recursive moment tracking registers
-    logic signed [23:0] m00_reg;
-    logic signed [27:0] m01_reg;
-    logic signed [27:0] m10_reg;
+    logic signed [23:0] m00_reg, m00_next;
+    logic signed [27:0] m01_reg, m01_next;
+    logic signed [27:0] m10_reg, m10_next;
+
+    always_comb begin
+        m00_next = m00_reg + 24'(s_cin) - 24'(s_cout);
+        m01_next = m01_reg + 28'(m01_cin) - 28'(m01_cout);
+        m10_next = m10_reg + (28'(s_cin) * 28'sd18) + (28'(s_cout) * 28'sd19) - 28'(m00_reg);
+    end
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             m00_reg <= '0;
             m01_reg <= '0;
             m10_reg <= '0;
-        end else if (pixel_valid && win_valid) begin
-            m00_reg <= m00_reg + s_cin - s_cout;
-            m01_reg <= m01_reg + m01_cin - m01_cout;
-            m10_reg <= m10_reg - (s_cin * 18) - (s_cout * 19) + m00_reg;
+        end else if (pixel_valid_d1) begin
+            m00_reg <= m00_next;
+            m01_reg <= m01_next;
+            m10_reg <= m10_next;
         end
     end
 
     // Quadrant and Angle sector calculation
-    logic [1:0] quadrant;
-    logic signed [27:0] abs_m01, abs_m10;
+    logic [1:0]  quadrant;
+    logic [27:0] abs_m01, abs_m10;
 
     always_comb begin
-        abs_m01 = (m01_reg >= 0) ? m01_reg : -m01_reg;
-        abs_m10 = (m10_reg >= 0) ? m10_reg : -m10_reg;
+        abs_m01 = (m01_next >= 0) ? 28'(m01_next) : 28'(-m01_next);
+        abs_m10 = (m10_next >= 0) ? 28'(m10_next) : 28'(-m10_next);
 
         // Quadrant encoding: 0 = [0, 90), 1 = [90, 180), 2 = [180, 270), 3 = [270, 360)
-        if (m10_reg >= 0 && m01_reg >= 0)      quadrant = 2'b00;
-        else if (m10_reg < 0 && m01_reg >= 0)  quadrant = 2'b01;
-        else if (m10_reg < 0 && m01_reg < 0)   quadrant = 2'b10;
-        else                                   quadrant = 2'b11;
+        if (m10_next >= 0 && m01_next >= 0)      quadrant = 2'b00;
+        else if (m10_next < 0 && m01_next >= 0)  quadrant = 2'b01;
+        else if (m10_next < 0 && m01_next < 0)   quadrant = 2'b10;
+        else                                     quadrant = 2'b11;
     end
 
-    // 15 tangent threshold multipliers (tan(θ) * 256) for 16 sectors per quadrant
+    // 15 tangent threshold multipliers (tan(theta) * 256) for 16 sectors per quadrant
     localparam logic [12:0] TAN_THRESH [0:14] = '{
-        13'd25,   //  5.625°
-        13'd51,   // 11.250°
-        13'd78,   // 16.875°
-        13'd106,  // 22.500°
-        13'd137,  // 28.125°
-        13'd171,  // 33.750°
-        13'd210,  // 39.375°
-        13'd256,  // 45.000°
-        13'd312,  // 50.625°
-        13'd383,  // 56.250°
-        13'd479,  // 61.875°
-        13'd618,  // 67.500°
-        13'd844,  // 73.125°
-        13'd1287, // 78.750°
-        13'd2599  // 84.375°
+        13'd25,   //  5.625 deg
+        13'd51,   // 11.250 deg
+        13'd78,   // 16.875 deg
+        13'd106,  // 22.500 deg
+        13'd137,  // 28.125 deg
+        13'd171,  // 33.750 deg
+        13'd210,  // 39.375 deg
+        13'd256,  // 45.000 deg
+        13'd312,  // 50.625 deg
+        13'd383,  // 56.250 deg
+        13'd479,  // 61.875 deg
+        13'd618,  // 67.500 deg
+        13'd844,  // 73.125 deg
+        13'd1287, // 78.750 deg
+        13'd2599  // 84.375 deg
     };
 
     logic [3:0] sector_in_quad;
     always_comb begin
         sector_in_quad = 4'd15; // default to last sector
         for (int s = 0; s < 15; s++) begin
-            if ((abs_m10 * TAN_THRESH[s]) >= (abs_m01 <<< 8)) begin
+            if ((40'(abs_m10) * 40'(TAN_THRESH[s])) >= (40'(abs_m01) << 8)) begin
                 sector_in_quad = 4'(s);
                 break;
             end
@@ -167,8 +180,8 @@ module orientation #(
             orientation_valid  <= 1'b0;
             busy               <= 1'b0;
         end else begin
-            orientation_valid  <= keypoint_valid;
-            if (keypoint_valid) begin
+            orientation_valid  <= keypoint_valid && win_valid;
+            if (keypoint_valid && win_valid) begin
                 orientation_out    <= computed_angle;
                 keypoint_score_out <= keypoint_score;
                 keypoint_x_out     <= keypoint_x;

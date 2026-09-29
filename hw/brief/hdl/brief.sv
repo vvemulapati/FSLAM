@@ -1,13 +1,6 @@
-//------------------------------------------------------------------------------
-// File: brief.sv
-// Description: Rotated BRIEF (rBRIEF) 256-bit descriptor generator.
-//              Freezes the 37x37 smoothed window upon keypoint trigger, rotates
-//              256 test pair coordinates using keypoint orientation with full 16-bit
-//              intermediate precision, samples pixels from the frozen patch,
-//              and generates the 256-bit binary descriptor.
-//              Latches keypoint metadata (x, y, score) and outputs them aligned
-//              with descriptor_valid.
-//------------------------------------------------------------------------------
+// rBRIEF descriptor (256 bits). On a keypoint, freezes the 37x37 blurred patch,
+// rotates the 256 test pairs by the keypoint angle and compares the sampled
+// pixel pairs. Keypoint x, y and score are passed through with descriptor_valid.
 
 `timescale 1ns / 1ps
 
@@ -29,7 +22,7 @@ module brief #(
     input  logic [PIXEL_WIDTH-1:0]                window_buffer [WINDOW_SIZE-1:0][WINDOW_SIZE-1:0],
     input  logic                                  window_valid,
 
-    // 256 pairs of (x1, y1, x2, y2) in 27x27 patch range (-13 to +13)
+    // 256 test pairs (x1, y1, x2, y2), coordinates in [-13, 12]
     input  logic signed [COORD_BITS-1:0]          pattern_coords [0:DESCRIPTOR_BITS-1][0:3],
 
     output logic [DESCRIPTOR_BITS-1:0]            descriptor,
@@ -66,17 +59,13 @@ module brief #(
         -8'sd71, -8'sd60, -8'sd49, -8'sd37, -8'sd25, -8'sd12, -8'sd0,  -8'sd0
     };
 
-    // State machine
-    typedef enum logic [1:0] {
+    typedef enum logic {
         IDLE,
-        GENERATE,
         DONE
     } state_t;
 
     state_t state;
-    logic [7:0] pair_idx;
     logic [ANGLE_BITS-1:0] active_orientation;
-    logic [DESCRIPTOR_BITS-1:0] desc_accum;
 
     // Latched patch buffer
     logic [PIXEL_WIDTH-1:0] frozen_win [WINDOW_SIZE-1:0][WINDOW_SIZE-1:0];
@@ -90,61 +79,53 @@ module brief #(
     assign cos_val = COS_LUT[active_orientation];
     assign sin_val = SIN_LUT[active_orientation];
 
-    // Current pair coordinates
-    logic signed [COORD_BITS-1:0] x1, y1, x2, y2;
-    assign x1 = pattern_coords[pair_idx][0];
-    assign y1 = pattern_coords[pair_idx][1];
-    assign x2 = pattern_coords[pair_idx][2];
-    assign y2 = pattern_coords[pair_idx][3];
-
-    // Rotate coordinates with 16-bit intermediate multiplication
-    logic signed [15:0] prod_x1_cos, prod_y1_sin, prod_x1_sin, prod_y1_cos;
-    logic signed [15:0] prod_x2_cos, prod_y2_sin, prod_x2_sin, prod_y2_cos;
-    logic signed [7:0]  rot_x1, rot_y1, rot_x2, rot_y2;
-    logic signed [7:0]  win_x1, win_y1, win_x2, win_y2;
+    // Rotate all 256 test pairs and compare sampled pixels from frozen_win.
+    // frozen_win[0][0] is bottom-right (+18, +18), so index = WINDOW_CENTER - rot.
+    logic [DESCRIPTOR_BITS-1:0] desc_comb;
 
     always_comb begin
-        prod_x1_cos = 16'($signed(x1)) * 16'($signed(cos_val));
-        prod_y1_sin = 16'($signed(y1)) * 16'($signed(sin_val));
-        prod_x1_sin = 16'($signed(x1)) * 16'($signed(sin_val));
-        prod_y1_cos = 16'($signed(y1)) * 16'($signed(cos_val));
+        desc_comb = '0;
+        for (int i = 0; i < DESCRIPTOR_BITS; i++) begin
+            automatic logic signed [15:0] px1_cos, py1_sin, px1_sin, py1_cos;
+            automatic logic signed [15:0] px2_cos, py2_sin, px2_sin, py2_cos;
+            automatic logic signed [7:0]  rx1, ry1, rx2, ry2;
+            automatic logic signed [7:0]  wx1, wy1, wx2, wy2;
+            automatic logic [PIXEL_WIDTH-1:0] p1, p2;
 
-        prod_x2_cos = 16'($signed(x2)) * 16'($signed(cos_val));
-        prod_y2_sin = 16'($signed(y2)) * 16'($signed(sin_val));
-        prod_x2_sin = 16'($signed(x2)) * 16'($signed(sin_val));
-        prod_y2_cos = 16'($signed(y2)) * 16'($signed(cos_val));
+            px1_cos = 16'($signed(pattern_coords[i][0])) * 16'($signed(cos_val));
+            py1_sin = 16'($signed(pattern_coords[i][1])) * 16'($signed(sin_val));
+            px1_sin = 16'($signed(pattern_coords[i][0])) * 16'($signed(sin_val));
+            py1_cos = 16'($signed(pattern_coords[i][1])) * 16'($signed(cos_val));
 
-        rot_x1 = 8'((prod_x1_cos - prod_y1_sin) >>> 7);
-        rot_y1 = 8'((prod_x1_sin + prod_y1_cos) >>> 7);
-        rot_x2 = 8'((prod_x2_cos - prod_y2_sin) >>> 7);
-        rot_y2 = 8'((prod_x2_sin + prod_y2_cos) >>> 7);
+            px2_cos = 16'($signed(pattern_coords[i][2])) * 16'($signed(cos_val));
+            py2_sin = 16'($signed(pattern_coords[i][3])) * 16'($signed(sin_val));
+            px2_sin = 16'($signed(pattern_coords[i][2])) * 16'($signed(sin_val));
+            py2_cos = 16'($signed(pattern_coords[i][3])) * 16'($signed(cos_val));
 
-        win_x1 = rot_x1 + 8'(WINDOW_CENTER);
-        win_y1 = rot_y1 + 8'(WINDOW_CENTER);
-        win_x2 = rot_x2 + 8'(WINDOW_CENTER);
-        win_y2 = rot_y2 + 8'(WINDOW_CENTER);
-    end
+            rx1 = 8'($signed(px1_cos - py1_sin) >>> 7);
+            ry1 = 8'($signed(px1_sin + py1_cos) >>> 7);
+            rx2 = 8'($signed(px2_cos - py2_sin) >>> 7);
+            ry2 = 8'($signed(px2_sin + py2_cos) >>> 7);
 
-    // Pixel sampling from frozen window and comparison
-    logic [PIXEL_WIDTH-1:0] p1, p2;
-    logic bit_val;
+            wx1 = 8'(WINDOW_CENTER) - rx1;
+            wy1 = 8'(WINDOW_CENTER) - ry1;
+            wx2 = 8'(WINDOW_CENTER) - rx2;
+            wy2 = 8'(WINDOW_CENTER) - ry2;
 
-    always_comb begin
-        p1 = (win_x1 >= 0 && win_x1 < WINDOW_SIZE && win_y1 >= 0 && win_y1 < WINDOW_SIZE) ?
-             frozen_win[win_y1[5:0]][win_x1[5:0]] : '0;
-        p2 = (win_x2 >= 0 && win_x2 < WINDOW_SIZE && win_y2 >= 0 && win_y2 < WINDOW_SIZE) ?
-             frozen_win[win_y2[5:0]][win_x2[5:0]] : '0;
+            p1 = (wx1 >= 0 && wx1 < 8'(WINDOW_SIZE) && wy1 >= 0 && wy1 < 8'(WINDOW_SIZE)) ?
+                 frozen_win[wy1[5:0]][wx1[5:0]] : '0;
+            p2 = (wx2 >= 0 && wx2 < 8'(WINDOW_SIZE) && wy2 >= 0 && wy2 < 8'(WINDOW_SIZE)) ?
+                 frozen_win[wy2[5:0]][wx2[5:0]] : '0;
 
-        bit_val = (p1 > p2);
+            desc_comb[i] = (p1 > p2);
+        end
     end
 
     // Control FSM
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             state              <= IDLE;
-            pair_idx           <= '0;
             active_orientation <= '0;
-            desc_accum         <= '0;
             descriptor         <= '0;
             keypoint_score_out <= '0;
             keypoint_x_out     <= '0;
@@ -160,38 +141,37 @@ module brief #(
                 IDLE: begin
                     descriptor_valid <= 1'b0;
                     if (start && window_valid) begin
-                        state              <= GENERATE;
+                        state              <= DONE;
                         active_orientation <= orientation;
                         latched_score      <= keypoint_score_in;
                         latched_x          <= keypoint_x_in;
                         latched_y          <= keypoint_y_in;
-                        frozen_win         <= window_buffer; // Freeze 37x37 patch
-                        pair_idx           <= '0;
-                        desc_accum         <= '0;
+                        frozen_win         <= window_buffer;
                         busy               <= 1'b1;
                     end else begin
                         busy <= 1'b0;
                     end
                 end
 
-                GENERATE: begin
-                    desc_accum[pair_idx] <= bit_val;
-                    if (pair_idx == 8'd255) begin
-                        state <= DONE;
-                    end else begin
-                        pair_idx <= pair_idx + 1;
-                    end
-                end
-
                 DONE: begin
-                    descriptor         <= desc_accum;
+                    descriptor         <= desc_comb;
                     keypoint_score_out <= latched_score;
                     keypoint_x_out     <= latched_x;
                     keypoint_y_out     <= latched_y;
                     orientation_out    <= active_orientation;
                     descriptor_valid   <= 1'b1;
-                    busy               <= 1'b0;
-                    state              <= IDLE;
+                    if (start && window_valid) begin
+                        state              <= DONE;
+                        active_orientation <= orientation;
+                        latched_score      <= keypoint_score_in;
+                        latched_x          <= keypoint_x_in;
+                        latched_y          <= keypoint_y_in;
+                        frozen_win         <= window_buffer;
+                        busy               <= 1'b1;
+                    end else begin
+                        busy  <= 1'b0;
+                        state <= IDLE;
+                    end
                 end
             endcase
         end

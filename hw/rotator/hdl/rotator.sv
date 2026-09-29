@@ -1,10 +1,7 @@
-//------------------------------------------------------------------------------
-// File: rotator.sv
-// Description: BRIEF coordinate rotator module using 64-sector sin/cos LUT.
-//              Rotates coordinate pair (x, y) relative to keypoint center:
-//                x' = (x*cos(θ) - y*sin(θ)) >>> 7
-//                y' = (x*sin(θ) + y*cos(θ)) >>> 7
-//------------------------------------------------------------------------------
+// Rotates a BRIEF test point (x, y) by the keypoint angle using 64-sector
+// sin/cos tables (Q1.7):
+//   x' = (x*cos(theta) - y*sin(theta)) >>> 7
+//   y' = (x*sin(theta) + y*cos(theta)) >>> 7
 
 `timescale 1ns / 1ps
 
