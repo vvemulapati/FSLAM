@@ -17,8 +17,7 @@ module window_buffer #(
     input  logic [DATA_WIDTH-1:0] in_data,
 
     output logic                  out_valid,
-    output logic [DATA_WIDTH-1:0] win     [WINDOW_SIZE-1:0][WINDOW_SIZE-1:0],
-    output logic [DATA_WIDTH-1:0] col_out [WINDOW_SIZE-1:0]
+    output logic [DATA_WIDTH-1:0] win [WINDOW_SIZE-1:0][WINDOW_SIZE-1:0]
 );
 
     localparam int N_LB          = WINDOW_SIZE - 1;
@@ -130,14 +129,6 @@ module window_buffer #(
             end
         end
     endgenerate
-
-    // Pre-shift-register incoming column (aligned with in_valid, 1 cycle ahead of win[][0])
-    always_comb begin
-        col_out[0] = in_data;
-        for (int r = 1; r < WINDOW_SIZE; r++) begin
-            col_out[r] = row_filled[r-1] ? lb_out_data[r-1] : '0;
-        end
-    end
 
     assign out_valid = in_valid_d1;
 

@@ -7,7 +7,7 @@
 // Simple dual-port RAM, registered read (1-cycle latency).
 module keypoint_fifo_ram #(
     parameter int DATA_WIDTH = 46,
-    parameter int DEPTH      = 64,
+    parameter int DEPTH      = 32,
     parameter int ADDR_WIDTH = (DEPTH > 1) ? $clog2(DEPTH) : 1,
     parameter     RAM_STYLE  = "block" // "block", "distributed", or "ultra"
 ) (
@@ -44,7 +44,7 @@ endmodule
 
 module keypoint_fifo #(
     parameter int DATA_WIDTH         = 46,
-    parameter int DEPTH              = 64,
+    parameter int DEPTH              = 32,
     parameter int ALMOST_FULL_THRESH = DEPTH - 4,
     parameter int ADDR_WIDTH         = (DEPTH > 1) ? $clog2(DEPTH) : 1,
     parameter     RAM_STYLE          = "block"

@@ -1,11 +1,9 @@
 // rBRIEF descriptor (256 bits).
 //   - Captures the 37x37 blurred patch into a single frozen_win buffer on
 //     patch_latch (sharing the single 37x37 window_buffer with orientation).
-//   - Because 3x3 NMS guarantees >= 2 clock cycles between keypoints and
-//     orientation completes in 2 cycles after patch_latch, frozen_win is
-//     sampled on start using the registered 6-bit orientation (with max_fanout
-//     replication in orientation.sv), allowing Vivado to constant-fold each
-//     rotated 6-bit coordinate into a single LUT6 with zero multipliers/adders.
+//   - Latches the 6-bit orientation into internal register active_orientation
+//     on start, then rotates all 256 test pairs and compares the sampled pixel
+//     pairs on the following cycle.
 
 `timescale 1ns / 1ps
 
@@ -65,15 +63,17 @@ module brief #(
         -8'sd90,  -8'sd81,  -8'sd71,  -8'sd60,  -8'sd49,  -8'sd37,  -8'sd25,  -8'sd12
     };
 
-    // Single 37x37 patch buffer (latched on patch_latch, sampled 2 cycles later on start)
+    // Single 37x37 patch buffer and internal 6-bit orientation register
     logic [PIXEL_WIDTH-1:0] frozen_win [WINDOW_SIZE-1:0][WINDOW_SIZE-1:0];
-    logic                   patch_pending;
+    logic [ANGLE_BITS-1:0]  active_orientation;
+    logic [15:0]            latched_score;
+    logic [11:0]            latched_x, latched_y;
+    logic                   s1_valid;
 
-    // Active sin/cos from 6-bit orientation (allows Vivado to collapse each
-    // rotated coordinate bit into a single 6-input LUT6 of orientation[5:0])
+    // Active sin/cos from internal 6-bit register active_orientation
     logic signed [7:0] cos_val, sin_val;
-    assign cos_val = COS_LUT[orientation];
-    assign sin_val = SIN_LUT[orientation];
+    assign cos_val = COS_LUT[active_orientation];
+    assign sin_val = SIN_LUT[active_orientation];
 
     // Rotate all 256 test pairs and compare sampled pixels from frozen_win.
     // frozen_win[0][0] is bottom-right (+18, +18), so index = WINDOW_CENTER - rot.
@@ -120,7 +120,11 @@ module brief #(
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            patch_pending      <= 1'b0;
+            active_orientation <= '0;
+            latched_score      <= '0;
+            latched_x          <= '0;
+            latched_y          <= '0;
+            s1_valid           <= 1'b0;
             descriptor         <= '0;
             keypoint_score_out <= '0;
             keypoint_x_out     <= '0;
@@ -129,23 +133,28 @@ module brief #(
             descriptor_valid   <= 1'b0;
         end else begin
             if (patch_latch) begin
-                frozen_win    <= window_buffer;
-                patch_pending <= 1'b1;
-            end else if (start) begin
-                patch_pending <= 1'b0;
+                frozen_win <= window_buffer;
             end
 
-            descriptor_valid <= start;
+            s1_valid <= start;
             if (start) begin
+                active_orientation <= orientation;
+                latched_score      <= keypoint_score_in;
+                latched_x          <= keypoint_x_in;
+                latched_y          <= keypoint_y_in;
+            end
+
+            descriptor_valid <= s1_valid;
+            if (s1_valid) begin
                 descriptor         <= desc_comb;
-                keypoint_score_out <= keypoint_score_in;
-                keypoint_x_out     <= keypoint_x_in;
-                keypoint_y_out     <= keypoint_y_in;
-                orientation_out    <= orientation;
+                keypoint_score_out <= latched_score;
+                keypoint_x_out     <= latched_x;
+                keypoint_y_out     <= latched_y;
+                orientation_out    <= active_orientation;
             end
         end
     end
 
-    assign busy = patch_pending || descriptor_valid;
+    assign busy = start || s1_valid || descriptor_valid;
 
 endmodule
