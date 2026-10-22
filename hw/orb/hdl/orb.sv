@@ -81,7 +81,7 @@ module orb #(
     localparam int LEVEL_WIDTHS  [0:3] = '{640, 533, 444, 370};
     localparam int LEVEL_HEIGHTS [0:3] = '{480, 400, 333, 277};
 
-    // One feature_extractor + output buffer FIFO per pyramid level
+    // One feature_extractor + distributed-RAM output buffer FIFO per pyramid level
     genvar lvl;
     generate
         for (lvl = 0; lvl < PYRAMID_LEVELS; lvl++) begin : gen_feature_extractor
@@ -91,7 +91,7 @@ module orb #(
                 .IMG_HEIGHT(LEVEL_HEIGHTS[lvl]),
                 .DESCRIPTOR_BITS(DESCRIPTOR_BITS),
                 .FAST_THRESHOLD(FAST_THRESHOLD),
-                .FIFO_DEPTH(1024),
+                .FIFO_DEPTH(512),
                 .ANGLE_BITS(6),
                 .COORD_BITS(6)
             ) u_feature_extractor (
@@ -113,7 +113,8 @@ module orb #(
             descriptor_fifo #(
                 .DATA_WIDTH(LVL_FIFO_W),
                 .DEPTH(32),
-                .ALMOST_FULL_THRESH(24)
+                .ALMOST_FULL_THRESH(24),
+                .RAM_STYLE("distributed")
             ) u_lvl_out_fifo (
                 .clk(clk),
                 .rst_n(rst_n),

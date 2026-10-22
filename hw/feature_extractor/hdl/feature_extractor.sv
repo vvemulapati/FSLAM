@@ -10,7 +10,7 @@ module feature_extractor #(
     parameter int IMG_HEIGHT      = 480,
     parameter int DESCRIPTOR_BITS = 256,
     parameter int FAST_THRESHOLD  = 5,
-    parameter int FIFO_DEPTH      = 1024,
+    parameter int FIFO_DEPTH      = 512,
     parameter int ANGLE_BITS      = 6,
     parameter int COORD_BITS      = 6
 ) (
@@ -99,17 +99,9 @@ module feature_extractor #(
     );
 
     // Shared 37x37 window on the blurred stream, used by both orientation and rBRIEF
-    logic [PIXEL_WIDTH-1:0] blur_win [36:0][36:0];
+    logic [PIXEL_WIDTH-1:0] blur_win    [36:0][36:0];
+    logic [PIXEL_WIDTH-1:0] ori_col_in  [36:0];
     logic                   blur_win_valid;
-    logic                   blur_valid_d1;
-
-    always_ff @(posedge clk) begin
-        if (!rst_n) begin
-            blur_valid_d1 <= 1'b0;
-        end else begin
-            blur_valid_d1 <= blur_valid;
-        end
-    end
 
     window_buffer #(
         .DATA_WIDTH(PIXEL_WIDTH),
@@ -121,16 +113,9 @@ module feature_extractor #(
         .in_valid(blur_valid),
         .in_data(blur_pixel),
         .out_valid(blur_win_valid),
-        .win(blur_win)
+        .win(blur_win),
+        .col_out(ori_col_in)
     );
-
-    // Extract rightmost incoming column Cin (blur_win[0..36][0]) for orientation
-    logic [PIXEL_WIDTH-1:0] ori_col_in [36:0];
-    always_comb begin
-        for (int r = 0; r < 37; r++) begin
-            ori_col_in[r] = blur_win[r][0];
-        end
-    end
 
     // Only enqueue keypoints whose 37x37 patch (radius 18) lies within the
     // valid interior [18, IMG_WIDTH-22] x [18, IMG_HEIGHT-22].
@@ -212,7 +197,7 @@ module feature_extractor #(
         end
     end
 
-    // Orientation (4-stage pipelined, sharing u_brief_win_buf column 0)
+    // Orientation (3-stage pipelined, sharing u_brief_win_buf incoming column)
     orientation #(
         .PIXEL_WIDTH(PIXEL_WIDTH),
         .WINDOW_SIZE(37),
@@ -225,7 +210,7 @@ module feature_extractor #(
         .keypoint_score(disp_score),
         .keypoint_x(disp_x),
         .keypoint_y(disp_y),
-        .col_valid(blur_valid_d1),
+        .col_valid(blur_valid),
         .win_valid(blur_win_valid),
         .col_in(ori_col_in),
         .orientation_out(ori_angle),
@@ -236,7 +221,7 @@ module feature_extractor #(
         .busy(ori_busy)
     );
 
-    // rBRIEF (2-stage pipelined, latching blur_win on disp_valid && blur_win_valid)
+    // rBRIEF (single-patch buffer latched on disp_valid && blur_win_valid)
     brief #(
         .PIXEL_WIDTH(PIXEL_WIDTH),
         .WINDOW_SIZE(37),
