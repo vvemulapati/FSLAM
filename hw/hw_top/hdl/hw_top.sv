@@ -50,36 +50,53 @@ module hw_top #(
     logic         desc_fifo_empty;
     logic         desc_fifo_almost_empty;
     logic         desc_fifo_underflow;
-    logic [4:0]   desc_fifo_count;
+    logic [6:0]   desc_fifo_count;
 
     // Backpressure pixel unpacking when the descriptor FIFO is filling up
     logic fifo_backpressure;
     assign fifo_backpressure = desc_fifo_almost_full || desc_fifo_full;
 
-    // Pixel Stream Unpacking (4 pixels per 32-bit AXI word: 6-bit per pixel)
-    logic [1:0] byte_sel;
-    logic [PIXEL_WIDTH-1:0] pixel_in;
-    logic pixel_valid;
+    // Input holding register: isolates top-level AXI-Stream input pins from
+    // the internal pixel unpacker and pyramid fanout.
+    logic [AXI_DATA_WIDTH-1:0] axis_buf_data;
+    logic                      axis_buf_last;
+    logic                      axis_buf_valid;
+    logic [1:0]                byte_sel;
+    logic [PIXEL_WIDTH-1:0]    pixel_in;
+    logic                      pixel_valid;
 
-    always_comb begin
-        case (byte_sel)
-            2'b00: pixel_in = s_axis_tdata[5:0];
-            2'b01: pixel_in = s_axis_tdata[13:8];
-            2'b10: pixel_in = s_axis_tdata[21:16];
-            2'b11: pixel_in = s_axis_tdata[29:24];
-        endcase
-        pixel_valid = s_axis_tvalid && !fifo_backpressure;
-    end
+    wire word_consumed = pixel_valid && (byte_sel == 2'b11);
+    assign s_axis_tready = !axis_buf_valid || word_consumed;
 
     always_ff @(posedge aclk) begin
         if (!aresetn) begin
-            byte_sel <= '0;
-        end else if (pixel_valid) begin
-            byte_sel <= byte_sel + 2'd1;
+            axis_buf_data  <= '0;
+            axis_buf_last  <= 1'b0;
+            axis_buf_valid <= 1'b0;
+            byte_sel       <= '0;
+        end else begin
+            if (s_axis_tready) begin
+                axis_buf_valid <= s_axis_tvalid;
+                if (s_axis_tvalid) begin
+                    axis_buf_data <= s_axis_tdata;
+                    axis_buf_last <= s_axis_tlast;
+                end
+            end
+            if (pixel_valid) begin
+                byte_sel <= byte_sel + 2'd1;
+            end
         end
     end
 
-    assign s_axis_tready = !fifo_backpressure && (byte_sel == 2'b11);
+    always_comb begin
+        case (byte_sel)
+            2'b00: pixel_in = axis_buf_data[5:0];
+            2'b01: pixel_in = axis_buf_data[13:8];
+            2'b10: pixel_in = axis_buf_data[21:16];
+            2'b11: pixel_in = axis_buf_data[29:24];
+        endcase
+        pixel_valid = axis_buf_valid && !fifo_backpressure;
+    end
 
     // ORB test pattern from OpenCV (bit_pattern_31_)
     logic signed [5:0] brief_pattern [0:255][0:3];
@@ -117,8 +134,8 @@ module hw_top #(
 
     descriptor_fifo #(
         .DATA_WIDTH(304),
-        .DEPTH(16),
-        .ALMOST_FULL_THRESH(8)
+        .DEPTH(64),
+        .ALMOST_FULL_THRESH(32)
     ) u_descriptor_fifo (
         .clk(aclk),
         .rst_n(aresetn),
@@ -185,7 +202,7 @@ module hw_top #(
         end
     end
 
-    // Frame completion interrupt: latch frame end on the last pixel of s_axis_tlast,
+    // Frame completion interrupt: latch frame end on the last pixel of axis_buf_last,
     // then assert interrupt once the ORB pipeline, FIFO, and serializer stay idle.
     logic       frame_end_pending;
     logic [5:0] idle_cnt;
@@ -197,7 +214,7 @@ module hw_top #(
             idle_cnt          <= '0;
             interrupt         <= 1'b0;
         end else begin
-            if (pixel_valid && s_axis_tlast && (byte_sel == 2'b11)) begin
+            if (pixel_valid && axis_buf_last && (byte_sel == 2'b11)) begin
                 frame_end_pending <= 1'b1;
                 idle_cnt          <= '0;
                 interrupt         <= 1'b0;

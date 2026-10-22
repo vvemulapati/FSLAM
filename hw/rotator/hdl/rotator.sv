@@ -22,27 +22,27 @@ module rotator #(
     output logic                             valid_out
 );
 
-    // 64-sector Cosine and Sine LUTs in Q1.7 format (scaled by 127)
+    // 64-sector Cosine and Sine LUTs in Q1.7 format (round(127 * cos/sin(2*pi*i/64)))
     localparam logic signed [7:0] COS_LUT [0:63] = '{
-        8'sd127, 8'sd126, 8'sd124, 8'sd120, 8'sd114, 8'sd108, 8'sd99,  8'sd90,
-        8'sd80,  8'sd69,  8'sd57,  8'sd45,  8'sd32,  8'sd19,  8'sd6,   -8'sd6,
-        -8'sd19, -8'sd32, -8'sd45, -8'sd57, -8'sd69, -8'sd80, -8'sd90, -8'sd99,
-        -8'sd108,-8'sd114,-8'sd120,-8'sd124,-8'sd126,-8'sd127,-8'sd127,-8'sd126,
-        -8'sd124,-8'sd120,-8'sd114,-8'sd108,-8'sd99, -8'sd90, -8'sd80, -8'sd69,
-        -8'sd57, -8'sd45, -8'sd32, -8'sd19, -8'sd6,   8'sd6,   8'sd19,  8'sd32,
-        8'sd45,  8'sd57,  8'sd69,  8'sd80,  8'sd90,  8'sd99,  8'sd108, 8'sd114,
-        8'sd120, 8'sd124, 8'sd126, 8'sd127, 8'sd127, 8'sd126, 8'sd124, 8'sd120
+         8'sd127,  8'sd126,  8'sd125,  8'sd122,  8'sd117,  8'sd112,  8'sd106,  8'sd98,
+         8'sd90,   8'sd81,   8'sd71,   8'sd60,   8'sd49,   8'sd37,   8'sd25,   8'sd12,
+         8'sd0,   -8'sd12,  -8'sd25,  -8'sd37,  -8'sd49,  -8'sd60,  -8'sd71,  -8'sd81,
+        -8'sd90,  -8'sd98,  -8'sd106, -8'sd112, -8'sd117, -8'sd122, -8'sd125, -8'sd126,
+        -8'sd127, -8'sd126, -8'sd125, -8'sd122, -8'sd117, -8'sd112, -8'sd106, -8'sd98,
+        -8'sd90,  -8'sd81,  -8'sd71,  -8'sd60,  -8'sd49,  -8'sd37,  -8'sd25,  -8'sd12,
+         8'sd0,    8'sd12,   8'sd25,   8'sd37,   8'sd49,   8'sd60,   8'sd71,   8'sd81,
+         8'sd90,   8'sd98,   8'sd106,  8'sd112,  8'sd117,  8'sd122,  8'sd125,  8'sd126
     };
 
     localparam logic signed [7:0] SIN_LUT [0:63] = '{
-        8'sd0,   8'sd12,  8'sd25,  8'sd37,  8'sd49,  8'sd60,  8'sd71,  8'sd80,
-        8'sd90,  8'sd99,  8'sd108, 8'sd114, 8'sd120, 8'sd124, 8'sd126, 8'sd127,
-        8'sd127, 8'sd126, 8'sd124, 8'sd120, 8'sd114, 8'sd108, 8'sd99,  8'sd90,
-        8'sd80,  8'sd71,  8'sd60,  8'sd49,  8'sd37,  8'sd25,  8'sd12,  8'sd0,
-        -8'sd12, -8'sd25, -8'sd37, -8'sd49, -8'sd60, -8'sd71, -8'sd80, -8'sd90,
-        -8'sd99, -8'sd108,-8'sd114,-8'sd120,-8'sd124,-8'sd126,-8'sd127,-8'sd127,
-        -8'sd126,-8'sd124,-8'sd120,-8'sd114,-8'sd108,-8'sd99, -8'sd90, -8'sd80,
-        -8'sd71, -8'sd60, -8'sd49, -8'sd37, -8'sd25, -8'sd12, -8'sd0,  -8'sd0
+         8'sd0,    8'sd12,   8'sd25,   8'sd37,   8'sd49,   8'sd60,   8'sd71,   8'sd81,
+         8'sd90,   8'sd98,   8'sd106,  8'sd112,  8'sd117,  8'sd122,  8'sd125,  8'sd126,
+         8'sd127,  8'sd126,  8'sd125,  8'sd122,  8'sd117,  8'sd112,  8'sd106,  8'sd98,
+         8'sd90,   8'sd81,   8'sd71,   8'sd60,   8'sd49,   8'sd37,   8'sd25,   8'sd12,
+         8'sd0,   -8'sd12,  -8'sd25,  -8'sd37,  -8'sd49,  -8'sd60,  -8'sd71,  -8'sd81,
+        -8'sd90,  -8'sd98,  -8'sd106, -8'sd112, -8'sd117, -8'sd122, -8'sd125, -8'sd126,
+        -8'sd127, -8'sd126, -8'sd125, -8'sd122, -8'sd117, -8'sd112, -8'sd106, -8'sd98,
+        -8'sd90,  -8'sd81,  -8'sd71,  -8'sd60,  -8'sd49,  -8'sd37,  -8'sd25,  -8'sd12
     };
 
     logic signed [7:0] cos_val, sin_val;

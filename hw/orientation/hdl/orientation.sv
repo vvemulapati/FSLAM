@@ -1,32 +1,31 @@
 // Keypoint orientation by intensity centroid over a 37x37 window, using running
-// moment updates:
-//   m00[n+1] = m00[n] + S(Cin) - S(Cout)
-//   m01[n+1] = m01[n] + m01(Cin) - m01(Cout)
-//   m10[n+1] = m10[n] + 18*S(Cin) + 19*S(Cout) - m00[n]
-// theta = atan2(m01, m10) is quantized to 64 sectors using the quadrant signs
-// and 15 tangent thresholds. Keypoint x, y and score are passed through with
-// orientation_valid.
+// moment updates and a 4-stage pipeline:
+//   Stage 1: 37-input column sums S(Cin) and m01(Cin) from shared 37x37 window
+//   Stage 2: Recursive moment accumulators m00, m01, m10
+//   Stage 3: 28-bit absolute values |m01|, |m10| and quadrant decoding
+//   Stage 4: 15-threshold tangent sector search and angle output
 
 `timescale 1ns / 1ps
 
 module orientation #(
-    parameter int PIXEL_WIDTH   = 6,
-    parameter int WINDOW_SIZE   = 37,
-    parameter int IMG_WIDTH     = 640,
-    parameter int ANGLE_BITS    = 6   // 64 sectors total (16 per quadrant)
+    parameter int PIXEL_WIDTH = 6,
+    parameter int WINDOW_SIZE = 37,
+    parameter int IMG_WIDTH   = 640,
+    parameter int ANGLE_BITS  = 6   // 64 sectors total (16 per quadrant)
 ) (
     input  logic                   clk,
     input  logic                   rst_n,
 
-    // Keypoint trigger from NMS
+    // Keypoint trigger from NMS / FIFO dispatch
     input  logic                   keypoint_valid,
     input  logic [15:0]            keypoint_score,
     input  logic [11:0]            keypoint_x,
     input  logic [11:0]            keypoint_y,
 
-    // Smoothed pixel stream from Gaussian blur
-    input  logic                   pixel_valid,
-    input  logic [PIXEL_WIDTH-1:0] pixel_in,
+    // Shared 37x1 incoming column Cin from feature_extractor's 37x37 window_buffer
+    input  logic                   col_valid,
+    input  logic                   win_valid,
+    input  logic [PIXEL_WIDTH-1:0] col_in [WINDOW_SIZE-1:0],
 
     output logic [ANGLE_BITS-1:0]  orientation_out,
     output logic [15:0]            keypoint_score_out,
@@ -36,49 +35,80 @@ module orientation #(
     output logic                   busy
 );
 
-    // 37-row window buffer to access 37x1 incoming column Cin
-    logic [PIXEL_WIDTH-1:0] win [WINDOW_SIZE-1:0][WINDOW_SIZE-1:0];
-    logic                   win_valid;
-
-    window_buffer #(
-        .DATA_WIDTH(PIXEL_WIDTH),
-        .LINE_WIDTH(IMG_WIDTH),
-        .WINDOW_SIZE(WINDOW_SIZE)
-    ) u_win_buf (
-        .clk(clk),
-        .rst_n(rst_n),
-        .in_valid(pixel_valid),
-        .in_data(pixel_in),
-        .out_valid(win_valid),
-        .win(win)
-    );
-
-    logic pixel_valid_d1;
-    always_ff @(posedge clk) begin
-        if (!rst_n) begin
-            pixel_valid_d1 <= 1'b0;
-        end else begin
-            pixel_valid_d1 <= pixel_valid;
-        end
-    end
-
-    // Column sum S(Cin) and column moment m01(Cin).
-    // win[0][0] is bottom-right (dy = +18, dx = +18), win[36][0] is top-right (dy = -18, dx = +18).
-    logic signed [15:0] s_cin;
-    logic signed [20:0] m01_cin;
+    // -------------------------------------------------------------------------
+    // Stage 1: Column sum S(Cin) and column moment m01(Cin)
+    // col_in[0] is bottom-right (dy = +18, dx = +18), col_in[36] is top-right (dy = -18, dx = +18).
+    // -------------------------------------------------------------------------
+    logic signed [15:0] s_cin_comb,   s_cin_q;
+    logic signed [20:0] m01_cin_comb, m01_cin_q;
+    logic signed [27:0] s_cin_x18_q;
+    logic               s1_col_valid;
+    logic               s1_kp_valid;
+    logic [15:0]        s1_kp_score;
+    logic [11:0]        s1_kp_x, s1_kp_y;
 
     always_comb begin
-        s_cin   = '0;
-        m01_cin = '0;
+        s_cin_comb   = '0;
+        m01_cin_comb = '0;
         for (int y = 0; y < WINDOW_SIZE; y++) begin
-            s_cin   += 16'($signed({1'b0, win[y][0]}));
-            m01_cin += 21'($signed({1'b0, win[y][0]}) * $signed(7'((WINDOW_SIZE / 2) - y)));
+            s_cin_comb   += 16'($signed({1'b0, col_in[y]}));
+            m01_cin_comb += 21'($signed({1'b0, col_in[y]}) * $signed(7'((WINDOW_SIZE / 2) - y)));
         end
     end
 
-    // Delay line of 37 valid steps to produce S(Cout) and m01(Cout)
-    logic signed [15:0] s_cout_pipe [0:WINDOW_SIZE-1];
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            s1_col_valid <= 1'b0;
+            s_cin_q      <= '0;
+            m01_cin_q    <= '0;
+            s_cin_x18_q  <= '0;
+            s1_kp_valid  <= 1'b0;
+            s1_kp_score  <= '0;
+            s1_kp_x      <= '0;
+            s1_kp_y      <= '0;
+        end else begin
+            s1_col_valid <= col_valid;
+            if (col_valid) begin
+                s_cin_q     <= s_cin_comb;
+                m01_cin_q   <= m01_cin_comb;
+                // 18 * S(Cin) = (S(Cin) << 4) + (S(Cin) << 1)
+                s_cin_x18_q <= (28'(s_cin_comb) <<< 4) + (28'(s_cin_comb) <<< 1);
+            end
+
+            s1_kp_valid <= keypoint_valid && win_valid;
+            if (keypoint_valid && win_valid) begin
+                s1_kp_score <= keypoint_score;
+                s1_kp_x     <= keypoint_x;
+                s1_kp_y     <= keypoint_y;
+            end
+        end
+    end
+
+    // -------------------------------------------------------------------------
+    // Stage 2: 37-step delay line for S(Cout), m01(Cout) & recursive moments
+    // -------------------------------------------------------------------------
+    logic signed [15:0] s_cout_pipe   [0:WINDOW_SIZE-1];
     logic signed [20:0] m01_cout_pipe [0:WINDOW_SIZE-1];
+
+    wire signed [15:0] s_cout     = s_cout_pipe[WINDOW_SIZE-1];
+    wire signed [20:0] m01_cout   = m01_cout_pipe[WINDOW_SIZE-1];
+    // 19 * S(Cout) = (S(Cout) << 4) + (S(Cout) << 1) + S(Cout)
+    wire signed [27:0] s_cout_x19 = (28'(s_cout) <<< 4) + (28'(s_cout) <<< 1) + 28'(s_cout);
+
+    logic signed [23:0] m00_reg, m00_next;
+    logic signed [27:0] m01_reg, m01_next;
+    logic signed [27:0] m10_reg, m10_next;
+
+    always_comb begin
+        m00_next = m00_reg + 24'(s_cin_q) - 24'(s_cout);
+        m01_next = m01_reg + 28'(m01_cin_q) - 28'(m01_cout);
+        m10_next = m10_reg + s_cin_x18_q + s_cout_x19 - 28'(m00_reg);
+    end
+
+    logic               s2_kp_valid;
+    logic [15:0]        s2_kp_score;
+    logic [11:0]        s2_kp_x, s2_kp_y;
+    logic signed [27:0] m01_s2, m10_s2;
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
@@ -86,58 +116,85 @@ module orientation #(
                 s_cout_pipe[i]   <= '0;
                 m01_cout_pipe[i] <= '0;
             end
-        end else if (pixel_valid_d1) begin
-            s_cout_pipe[0]   <= s_cin;
-            m01_cout_pipe[0] <= m01_cin;
-            for (int i = 1; i < WINDOW_SIZE; i++) begin
-                s_cout_pipe[i]   <= s_cout_pipe[i-1];
-                m01_cout_pipe[i] <= m01_cout_pipe[i-1];
+            m00_reg     <= '0;
+            m01_reg     <= '0;
+            m10_reg     <= '0;
+            s2_kp_valid <= 1'b0;
+            s2_kp_score <= '0;
+            s2_kp_x     <= '0;
+            s2_kp_y     <= '0;
+            m01_s2      <= '0;
+            m10_s2      <= '0;
+        end else begin
+            if (s1_col_valid) begin
+                s_cout_pipe[0]   <= s_cin_q;
+                m01_cout_pipe[0] <= m01_cin_q;
+                for (int i = 1; i < WINDOW_SIZE; i++) begin
+                    s_cout_pipe[i]   <= s_cout_pipe[i-1];
+                    m01_cout_pipe[i] <= m01_cout_pipe[i-1];
+                end
+                m00_reg <= m00_next;
+                m01_reg <= m01_next;
+                m10_reg <= m10_next;
+            end
+
+            s2_kp_valid <= s1_kp_valid;
+            if (s1_kp_valid) begin
+                s2_kp_score <= s1_kp_score;
+                s2_kp_x     <= s1_kp_x;
+                s2_kp_y     <= s1_kp_y;
+                m01_s2      <= m01_next;
+                m10_s2      <= m10_next;
             end
         end
     end
 
-    wire signed [15:0] s_cout   = s_cout_pipe[WINDOW_SIZE-1];
-    wire signed [20:0] m01_cout = m01_cout_pipe[WINDOW_SIZE-1];
-
-    // Recursive moment tracking registers
-    logic signed [23:0] m00_reg, m00_next;
-    logic signed [27:0] m01_reg, m01_next;
-    logic signed [27:0] m10_reg, m10_next;
+    // -------------------------------------------------------------------------
+    // Stage 3: Absolute value and Quadrant decoding
+    // -------------------------------------------------------------------------
+    logic [1:0]  quadrant_comb, quadrant_s3;
+    logic [27:0] abs_m01_comb,  abs_m01_s3;
+    logic [27:0] abs_m10_comb,  abs_m10_s3;
+    logic        s3_kp_valid;
+    logic [15:0] s3_kp_score;
+    logic [11:0] s3_kp_x, s3_kp_y;
 
     always_comb begin
-        m00_next = m00_reg + 24'(s_cin) - 24'(s_cout);
-        m01_next = m01_reg + 28'(m01_cin) - 28'(m01_cout);
-        m10_next = m10_reg + (28'(s_cin) * 28'sd18) + (28'(s_cout) * 28'sd19) - 28'(m00_reg);
+        abs_m01_comb = (m01_s2 >= 0) ? 28'(m01_s2) : 28'(-m01_s2);
+        abs_m10_comb = (m10_s2 >= 0) ? 28'(m10_s2) : 28'(-m10_s2);
+
+        // Quadrant encoding: 0 = [0, 90), 1 = [90, 180), 2 = [180, 270), 3 = [270, 360)
+        if (m10_s2 >= 0 && m01_s2 >= 0)      quadrant_comb = 2'b00;
+        else if (m10_s2 < 0 && m01_s2 >= 0)  quadrant_comb = 2'b01;
+        else if (m10_s2 < 0 && m01_s2 < 0)   quadrant_comb = 2'b10;
+        else                                 quadrant_comb = 2'b11;
     end
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            m00_reg <= '0;
-            m01_reg <= '0;
-            m10_reg <= '0;
-        end else if (pixel_valid_d1) begin
-            m00_reg <= m00_next;
-            m01_reg <= m01_next;
-            m10_reg <= m10_next;
+            s3_kp_valid <= 1'b0;
+            s3_kp_score <= '0;
+            s3_kp_x     <= '0;
+            s3_kp_y     <= '0;
+            abs_m01_s3  <= '0;
+            abs_m10_s3  <= '0;
+            quadrant_s3 <= '0;
+        end else begin
+            s3_kp_valid <= s2_kp_valid;
+            if (s2_kp_valid) begin
+                s3_kp_score <= s2_kp_score;
+                s3_kp_x     <= s2_kp_x;
+                s3_kp_y     <= s2_kp_y;
+                abs_m01_s3  <= abs_m01_comb;
+                abs_m10_s3  <= abs_m10_comb;
+                quadrant_s3 <= quadrant_comb;
+            end
         end
     end
 
-    // Quadrant and Angle sector calculation
-    logic [1:0]  quadrant;
-    logic [27:0] abs_m01, abs_m10;
-
-    always_comb begin
-        abs_m01 = (m01_next >= 0) ? 28'(m01_next) : 28'(-m01_next);
-        abs_m10 = (m10_next >= 0) ? 28'(m10_next) : 28'(-m10_next);
-
-        // Quadrant encoding: 0 = [0, 90), 1 = [90, 180), 2 = [180, 270), 3 = [270, 360)
-        if (m10_next >= 0 && m01_next >= 0)      quadrant = 2'b00;
-        else if (m10_next < 0 && m01_next >= 0)  quadrant = 2'b01;
-        else if (m10_next < 0 && m01_next < 0)   quadrant = 2'b10;
-        else                                     quadrant = 2'b11;
-    end
-
-    // 15 tangent threshold multipliers (tan(theta) * 256) for 16 sectors per quadrant
+    // -------------------------------------------------------------------------
+    // Stage 4: 15-threshold tangent sector search and angle output
+    // -------------------------------------------------------------------------
     localparam logic [12:0] TAN_THRESH [0:14] = '{
         13'd25,   //  5.625 deg
         13'd51,   // 11.250 deg
@@ -160,17 +217,20 @@ module orientation #(
     always_comb begin
         sector_in_quad = 4'd15; // default to last sector
         for (int s = 0; s < 15; s++) begin
-            if ((40'(abs_m10) * 40'(TAN_THRESH[s])) >= (40'(abs_m01) << 8)) begin
+            if ((40'(abs_m10_s3) * 40'(TAN_THRESH[s])) >= (40'(abs_m01_s3) << 8)) begin
                 sector_in_quad = 4'(s);
                 break;
             end
         end
     end
 
+    // Invert sector_in_quad in Quadrant 1 ([90, 180)) and Quadrant 3 ([270, 360))
+    // so the 64-sector index progresses monotonically counter-clockwise from 0..63.
+    logic [3:0] quad_sector;
     logic [5:0] computed_angle;
-    assign computed_angle = {quadrant, sector_in_quad};
+    assign quad_sector    = quadrant_s3[0] ? (4'd15 - sector_in_quad) : sector_in_quad;
+    assign computed_angle = {quadrant_s3, quad_sector};
 
-    // Output stage gated by keypoint trigger
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             orientation_out    <= '0;
@@ -178,17 +238,17 @@ module orientation #(
             keypoint_x_out     <= '0;
             keypoint_y_out     <= '0;
             orientation_valid  <= 1'b0;
-            busy               <= 1'b0;
         end else begin
-            orientation_valid  <= keypoint_valid && win_valid;
-            if (keypoint_valid && win_valid) begin
+            orientation_valid <= s3_kp_valid;
+            if (s3_kp_valid) begin
                 orientation_out    <= computed_angle;
-                keypoint_score_out <= keypoint_score;
-                keypoint_x_out     <= keypoint_x;
-                keypoint_y_out     <= keypoint_y;
+                keypoint_score_out <= s3_kp_score;
+                keypoint_x_out     <= s3_kp_x;
+                keypoint_y_out     <= s3_kp_y;
             end
-            busy <= 1'b0;
         end
     end
+
+    assign busy = keypoint_valid || s1_kp_valid || s2_kp_valid || s3_kp_valid || orientation_valid;
 
 endmodule

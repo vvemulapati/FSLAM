@@ -1,6 +1,8 @@
-// 7x7 binomial blur: outer product of [1 6 15 20 15 6 1], so sigma ~= 1.22
-// (ORB-SLAM2 uses a 7x7 Gaussian with sigma = 2). The coefficients sum to
-// 4096, so the result is rounded and shifted right by 12.
+// 7x7 binomial blur: outer product of [1 6 15 20 15 6 1]. Factored into a
+// 2-stage pipeline after the 7x7 window buffer (matching fast.sv's 2-stage
+// latency):
+//   Stage 1: 7 parallel symmetric 1D horizontal row convolutions
+//   Stage 2: Symmetric 1D vertical convolution of the 7 registered row sums
 
 `timescale 1ns / 1ps
 
@@ -19,17 +21,6 @@ module gaussian_blur #(
     output logic                   blur_valid,
     output logic [PIXEL_WIDTH-1:0] pixel_out
 );
-
-    // 7x7 Binomial coefficients (max value 400 requires at least 9 bits)
-    localparam logic [8:0] KERNEL [0:6][0:6] = '{
-        '{9'd1,  9'd6,  9'd15,  9'd20,  9'd15,  9'd6,  9'd1},
-        '{9'd6,  9'd36, 9'd90,  9'd120, 9'd90,  9'd36, 9'd6},
-        '{9'd15, 9'd90, 9'd225, 9'd300, 9'd225, 9'd90, 9'd15},
-        '{9'd20, 9'd120,9'd300, 9'd400, 9'd300, 9'd120,9'd20},
-        '{9'd15, 9'd90, 9'd225, 9'd300, 9'd225, 9'd90, 9'd15},
-        '{9'd6,  9'd36, 9'd90,  9'd120, 9'd90,  9'd36, 9'd6},
-        '{9'd1,  9'd6,  9'd15,  9'd20,  9'd15,  9'd6,  9'd1}
-    };
 
     logic [PIXEL_WIDTH-1:0] win [6:0][6:0];
     logic                   win_valid;
@@ -74,33 +65,82 @@ module gaussian_blur #(
         end
     end
 
-    // Convolution accumulator
-    logic [PIXEL_WIDTH+12:0] conv_sum;
-
-    always_comb begin
-        conv_sum = '0;
-        for (int r = 0; r < 7; r++) begin
-            for (int c = 0; c < 7; c++) begin
-                conv_sum += (PIXEL_WIDTH+13)'(win[r][c] * KERNEL[r][c]);
-            end
-        end
-    end
-
     logic center_valid;
     logic in_interior;
 
     assign center_valid = pixel_valid_d1 && ((win_y > 12'd3) || (win_y == 12'd3 && win_x >= 12'd3));
     assign in_interior  = win_valid && (win_x >= 12'd6) && (win_y >= 12'd6);
 
+    // Stage 1 combinational: 7 horizontal row sums with weights [1, 6, 15, 20, 15, 6, 1]
+    localparam int ROW_SUM_W = PIXEL_WIDTH + 6; // max = 63 * 64 = 4032 (12 bits for 6-bit pixels)
+    logic [ROW_SUM_W-1:0] row_sum_comb [0:6];
+
+    always_comb begin
+        for (int r = 0; r < 7; r++) begin
+            automatic logic [ROW_SUM_W-1:0] s06, s15, s24, s3;
+            s06 = ROW_SUM_W'(win[r][0]) + ROW_SUM_W'(win[r][6]);
+            s15 = ROW_SUM_W'(win[r][1]) + ROW_SUM_W'(win[r][5]);
+            s24 = ROW_SUM_W'(win[r][2]) + ROW_SUM_W'(win[r][4]);
+            s3  = ROW_SUM_W'(win[r][3]);
+
+            // 1*s06 + 6*s15 + 15*s24 + 20*s3
+            row_sum_comb[r] = s06
+                            + (s15 << 2) + (s15 << 1)
+                            + (s24 << 4) - s24
+                            + (s3  << 4) + (s3  << 2);
+        end
+    end
+
+    // Stage 1 pipeline registers
+    logic                 s1_valid;
+    logic                 s1_in_interior;
+    logic [ROW_SUM_W-1:0] s1_row_sum [0:6];
+
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            s1_valid       <= 1'b0;
+            s1_in_interior <= 1'b0;
+            for (int r = 0; r < 7; r++) begin
+                s1_row_sum[r] <= '0;
+            end
+        end else begin
+            s1_valid       <= center_valid;
+            s1_in_interior <= in_interior;
+            if (center_valid) begin
+                for (int r = 0; r < 7; r++) begin
+                    s1_row_sum[r] <= row_sum_comb[r];
+                end
+            end
+        end
+    end
+
+    // Stage 2 combinational: vertical weighted sum of the 7 registered row sums
+    localparam int CONV_W = PIXEL_WIDTH + 13;
+    logic [CONV_W-1:0] conv_sum;
+
+    always_comb begin
+        automatic logic [CONV_W-1:0] v06, v15, v24, v3;
+        v06 = CONV_W'(s1_row_sum[0]) + CONV_W'(s1_row_sum[6]);
+        v15 = CONV_W'(s1_row_sum[1]) + CONV_W'(s1_row_sum[5]);
+        v24 = CONV_W'(s1_row_sum[2]) + CONV_W'(s1_row_sum[4]);
+        v3  = CONV_W'(s1_row_sum[3]);
+
+        conv_sum = v06
+                 + (v15 << 2) + (v15 << 1)
+                 + (v24 << 4) - v24
+                 + (v3  << 4) + (v3  << 2);
+    end
+
+    // Stage 2 output registers
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             blur_valid <= 1'b0;
             pixel_out  <= '0;
         end else begin
-            blur_valid <= center_valid;
-            if (center_valid) begin
+            blur_valid <= s1_valid;
+            if (s1_valid) begin
                 // Divide by 4096 (with rounding: + 2048); zero the 3-pixel border
-                pixel_out <= in_interior ? PIXEL_WIDTH'((conv_sum + 19'd2048) >> 12) : '0;
+                pixel_out <= s1_in_interior ? PIXEL_WIDTH'((conv_sum + CONV_W'(2048)) >> 12) : '0;
             end
         end
     end

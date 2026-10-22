@@ -1,5 +1,5 @@
 // Multi-scale ORB: a 4-level pyramid feeds one feature_extractor per level, and
-// a fixed-priority arbiter (level 0 first) merges their outputs.
+// a fixed-priority arbiter (level 0 first) merges their per-level output FIFOs.
 
 `timescale 1ns / 1ps
 
@@ -9,6 +9,7 @@ module orb #(
     parameter int IMG_HEIGHT             = 480,
     parameter int PYRAMID_LEVELS         = 4,
     parameter int DESCRIPTOR_BITS        = 256,
+    parameter int FAST_THRESHOLD         = 5,
     parameter int MAX_FEATURES_PER_LEVEL = 250
 ) (
     input  logic                                  clk,
@@ -70,10 +71,17 @@ module orb #(
     logic [PYRAMID_LEVELS-1:0]          lvl_busy;
     logic [PYRAMID_LEVELS-1:0]          lvl_fifo_empty;
 
+    // Per-level output FIFO (prevents in-flight pipeline bursts from overwriting
+    // features when multiple levels fire simultaneously or downstream stalls).
+    localparam int LVL_FIFO_W = DESCRIPTOR_BITS + 16 + 12 + 12 + 6; // 302 bits
+    logic [PYRAMID_LEVELS-1:0]          lvl_out_empty;
+    logic [PYRAMID_LEVELS-1:0]          lvl_out_rd_en;
+    logic [LVL_FIFO_W-1:0]              lvl_out_dout [PYRAMID_LEVELS-1:0];
+
     localparam int LEVEL_WIDTHS  [0:3] = '{640, 533, 444, 370};
     localparam int LEVEL_HEIGHTS [0:3] = '{480, 400, 333, 277};
 
-    // One feature_extractor per pyramid level
+    // One feature_extractor + output buffer FIFO per pyramid level
     genvar lvl;
     generate
         for (lvl = 0; lvl < PYRAMID_LEVELS; lvl++) begin : gen_feature_extractor
@@ -82,8 +90,8 @@ module orb #(
                 .IMG_WIDTH(LEVEL_WIDTHS[lvl]),
                 .IMG_HEIGHT(LEVEL_HEIGHTS[lvl]),
                 .DESCRIPTOR_BITS(DESCRIPTOR_BITS),
-                .FAST_THRESHOLD(20),
-                .FIFO_DEPTH(64),
+                .FAST_THRESHOLD(FAST_THRESHOLD),
+                .FIFO_DEPTH(1024),
                 .ANGLE_BITS(6),
                 .COORD_BITS(6)
             ) u_feature_extractor (
@@ -101,19 +109,30 @@ module orb #(
                 .busy(lvl_busy[lvl]),
                 .fifo_empty(lvl_fifo_empty[lvl])
             );
+
+            descriptor_fifo #(
+                .DATA_WIDTH(LVL_FIFO_W),
+                .DEPTH(32),
+                .ALMOST_FULL_THRESH(24)
+            ) u_lvl_out_fifo (
+                .clk(clk),
+                .rst_n(rst_n),
+                .wr_en(lvl_feat_valid[lvl]),
+                .din({lvl_feat_desc[lvl], lvl_feat_score[lvl], lvl_feat_y[lvl], lvl_feat_x[lvl], lvl_feat_ori[lvl]}),
+                .full(),
+                .almost_full(),
+                .overflow(),
+                .rd_en(lvl_out_rd_en[lvl]),
+                .dout(lvl_out_dout[lvl]),
+                .empty(lvl_out_empty[lvl]),
+                .almost_empty(),
+                .underflow(),
+                .count()
+            );
         end
     endgenerate
 
-    // One holding register per level, so features that arrive in the same cycle
-    // from different levels aren't dropped.
-    logic [PYRAMID_LEVELS-1:0]          hold_valid;
-    logic [DESCRIPTOR_BITS-1:0]         hold_desc   [PYRAMID_LEVELS-1:0];
-    logic [15:0]                        hold_score  [PYRAMID_LEVELS-1:0];
-    logic [11:0]                        hold_x      [PYRAMID_LEVELS-1:0];
-    logic [11:0]                        hold_y      [PYRAMID_LEVELS-1:0];
-    logic [5:0]                         hold_ori    [PYRAMID_LEVELS-1:0];
-
-    // Fixed-priority arbiter: lowest level wins
+    // Fixed-priority arbiter: lowest level with non-empty FIFO wins
     logic [1:0] arb_grant_idx;
     logic       arb_grant_valid;
 
@@ -121,7 +140,7 @@ module orb #(
         arb_grant_valid = 1'b0;
         arb_grant_idx   = 2'd0;
         for (int k = 0; k < PYRAMID_LEVELS; k++) begin
-            if (hold_valid[k] || lvl_feat_valid[k]) begin
+            if (!lvl_out_empty[k]) begin
                 arb_grant_valid = 1'b1;
                 arb_grant_idx   = 2'(k);
                 break;
@@ -129,10 +148,15 @@ module orb #(
         end
     end
 
-    // Capture new features and output one per cycle when downstream is ready
+    always_comb begin
+        for (int k = 0; k < PYRAMID_LEVELS; k++) begin
+            lvl_out_rd_en[k] = arb_grant_valid && feature_ready && (arb_grant_idx == 2'(k));
+        end
+    end
+
+    // Register arbitrated feature output
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            hold_valid          <= '0;
             feature_valid       <= 1'b0;
             feature_descriptor  <= '0;
             feature_score       <= '0;
@@ -140,56 +164,16 @@ module orb #(
             feature_y           <= '0;
             feature_orientation <= '0;
             feature_level       <= '0;
-            for (int k = 0; k < PYRAMID_LEVELS; k++) begin
-                hold_desc[k]  <= '0;
-                hold_score[k] <= '0;
-                hold_x[k]     <= '0;
-                hold_y[k]     <= '0;
-                hold_ori[k]   <= '0;
-            end
+        end else if (arb_grant_valid && feature_ready) begin
+            feature_valid       <= 1'b1;
+            feature_level       <= arb_grant_idx;
+            feature_descriptor  <= lvl_out_dout[arb_grant_idx][301:46];
+            feature_score       <= lvl_out_dout[arb_grant_idx][45:30];
+            feature_y           <= lvl_out_dout[arb_grant_idx][29:18];
+            feature_x           <= lvl_out_dout[arb_grant_idx][17:6];
+            feature_orientation <= lvl_out_dout[arb_grant_idx][5:0];
         end else begin
-            for (int k = 0; k < PYRAMID_LEVELS; k++) begin
-                if (arb_grant_valid && feature_ready && (arb_grant_idx == 2'(k))) begin
-                    if (hold_valid[k] && lvl_feat_valid[k]) begin
-                        hold_valid[k] <= 1'b1;
-                        hold_desc[k]  <= lvl_feat_desc[k];
-                        hold_score[k] <= lvl_feat_score[k];
-                        hold_x[k]     <= lvl_feat_x[k];
-                        hold_y[k]     <= lvl_feat_y[k];
-                        hold_ori[k]   <= lvl_feat_ori[k];
-                    end else begin
-                        hold_valid[k] <= 1'b0;
-                    end
-                end else if (lvl_feat_valid[k]) begin
-                    hold_valid[k] <= 1'b1;
-                    hold_desc[k]  <= lvl_feat_desc[k];
-                    hold_score[k] <= lvl_feat_score[k];
-                    hold_x[k]     <= lvl_feat_x[k];
-                    hold_y[k]     <= lvl_feat_y[k];
-                    hold_ori[k]   <= lvl_feat_ori[k];
-                end
-            end
-
-            if (arb_grant_valid && feature_ready) begin
-                feature_valid <= 1'b1;
-                feature_level <= arb_grant_idx;
-
-                if (hold_valid[arb_grant_idx]) begin
-                    feature_descriptor  <= hold_desc[arb_grant_idx];
-                    feature_score       <= hold_score[arb_grant_idx];
-                    feature_x           <= hold_x[arb_grant_idx];
-                    feature_y           <= hold_y[arb_grant_idx];
-                    feature_orientation <= hold_ori[arb_grant_idx];
-                end else begin
-                    feature_descriptor  <= lvl_feat_desc[arb_grant_idx];
-                    feature_score       <= lvl_feat_score[arb_grant_idx];
-                    feature_x           <= lvl_feat_x[arb_grant_idx];
-                    feature_y           <= lvl_feat_y[arb_grant_idx];
-                    feature_orientation <= lvl_feat_ori[arb_grant_idx];
-                end
-            end else begin
-                feature_valid <= 1'b0;
-            end
+            feature_valid       <= 1'b0;
         end
     end
 
@@ -204,6 +188,6 @@ module orb #(
     end
 
     assign total_features = count_reg;
-    assign processing     = (|lvl_busy) || (!(&lvl_fifo_empty)) || (|hold_valid) || (|lvl_feat_valid) || feature_valid;
+    assign processing     = (|lvl_busy) || (!(&lvl_fifo_empty)) || (!(&lvl_out_empty)) || (|lvl_feat_valid) || feature_valid;
 
 endmodule

@@ -54,25 +54,25 @@ TAN_THRESH_15 = [
 
 # 64-sector Cosine and Sine LUTs (Q1.7 fixed point, range -127 to +127)
 COS_LUT_64 = [
-    127, 126, 124, 120, 114, 108, 99, 90,
-    80, 69, 57, 45, 32, 19, 6, -6,
-    -19, -32, -45, -57, -69, -80, -90, -99,
-    -108, -114, -120, -124, -126, -127, -127, -126,
-    -124, -120, -114, -108, -99, -90, -80, -69,
-    -57, -45, -32, -19, -6, 6, 19, 32,
-    45, 57, 69, 80, 90, 99, 108, 114,
-    120, 124, 126, 127, 127, 126, 124, 120
+     127,  126,  125,  122,  117,  112,  106,   98,
+      90,   81,   71,   60,   49,   37,   25,   12,
+       0,  -12,  -25,  -37,  -49,  -60,  -71,  -81,
+     -90,  -98, -106, -112, -117, -122, -125, -126,
+    -127, -126, -125, -122, -117, -112, -106,  -98,
+     -90,  -81,  -71,  -60,  -49,  -37,  -25,  -12,
+       0,   12,   25,   37,   49,   60,   71,   81,
+      90,   98,  106,  112,  117,  122,  125,  126
 ]
 
 SIN_LUT_64 = [
-    0, 12, 25, 37, 49, 60, 71, 80,
-    90, 99, 108, 114, 120, 124, 126, 127,
-    127, 126, 124, 120, 114, 108, 99, 90,
-    80, 71, 60, 49, 37, 25, 12, 0,
-    -12, -25, -37, -49, -60, -71, -80, -90,
-    -99, -108, -114, -120, -124, -126, -127, -127,
-    -126, -124, -120, -114, -108, -99, -90, -80,
-    -71, -60, -49, -37, -25, -12, 0, 0
+       0,   12,   25,   37,   49,   60,   71,   81,
+      90,   98,  106,  112,  117,  122,  125,  126,
+     127,  126,  125,  122,  117,  112,  106,   98,
+      90,   81,   71,   60,   49,   37,   25,   12,
+       0,  -12,  -25,  -37,  -49,  -60,  -71,  -81,
+     -90,  -98, -106, -112, -117, -122, -125, -126,
+    -127, -126, -125, -122, -117, -112, -106,  -98,
+     -90,  -81,  -71,  -60,  -49,  -37,  -25,  -12
 ]
 
 # ORB test pattern from OpenCV (bit_pattern_31_): 256 pairs of (x1, y1, x2, y2),
@@ -500,8 +500,8 @@ class ORBHardwareReferenceModel:
         (same tie-break as nms.sv).
         """
         keypoints = []
-        for y in range(1, height - 1):
-            for x in range(1, width - 1):
+        for y in range(18, height - 21):
+            for x in range(18, width - 21):
                 center = scores[y][x]
                 if center <= 0:
                     continue
@@ -572,7 +572,8 @@ class ORBHardwareReferenceModel:
                 sector_in_quad = s
                 break
 
-        angle_sector = (quadrant << 4) | sector_in_quad
+        quad_sector = (15 - sector_in_quad) if (quadrant & 1) else sector_in_quad
+        angle_sector = (quadrant << 4) | quad_sector
         return angle_sector
 
     def generate_brief_descriptor(
@@ -605,7 +606,7 @@ class ORBHardwareReferenceModel:
             val1 = blurred_img[py1][px1] if (-18 <= rot_x1 <= 18 and -18 <= rot_y1 <= 18 and 0 <= px1 < width and 0 <= py1 < height) else 0
             val2 = blurred_img[py2][px2] if (-18 <= rot_x2 <= 18 and -18 <= rot_y2 <= 18 and 0 <= px2 < width and 0 <= py2 < height) else 0
 
-            if val1 > val2:
+            if val1 < val2:
                 descriptor |= (1 << bit_idx)
 
         return descriptor
@@ -669,10 +670,10 @@ def match_features(
     return matches
 
 
-# Test image and self-test
+# Test image generators and PGM loader
 
 def generate_synthetic_image(width: int = 640, height: int = 480) -> List[List[int]]:
-    """Generates a synthetic test image with high-contrast geometric corners."""
+    """Generates the baseline synthetic test image with high-contrast geometric corners."""
     img = [[32] * width for _ in range(height)]
 
     # Draw high-contrast squares / checkerboard corners
@@ -691,42 +692,214 @@ def generate_synthetic_image(width: int = 640, height: int = 480) -> List[List[i
     return img
 
 
+def generate_rotated_shapes_image(width: int = 640, height: int = 480) -> List[List[int]]:
+    """Generates a multi-orientation test image (Siemens star, rotated diamonds,
+    concentric targets, and angled wedges) exercising all 64 orientation sectors.
+    """
+    import math
+    img = [[40] * width for _ in range(height)]
+
+    # 1. Central Siemens star (16 radial spokes) + concentric rings at (320, 240)
+    cx, cy = width // 2, height // 2
+    for y in range(cy - 150, cy + 150):
+        for x in range(cx - 150, cx + 150):
+            dx = x - cx
+            dy = y - cy
+            r_sq = dx * dx + dy * dy
+            if 16 <= r_sq <= 145 * 145:
+                theta = math.atan2(dy, dx)
+                sector = int(((theta + math.pi) / (2.0 * math.pi)) * 32.0) % 32
+                ring = int(math.sqrt(r_sq)) // 28
+                val = 230 if ((sector + ring) & 1) == 0 else 25
+                img[y][x] = val
+
+    # 2. Rotated diamonds and triangles in the four corners
+    centers = [(110, 100, 0.4), (530, 100, 0.9), (110, 380, 1.3), (530, 380, 2.1)]
+    for ox, oy, ang in centers:
+        ca, sa = math.cos(ang), math.sin(ang)
+        for y in range(max(20, oy - 70), min(height - 20, oy + 70)):
+            for x in range(max(20, ox - 70), min(width - 20, ox + 70)):
+                rx = (x - ox) * ca + (y - oy) * sa
+                ry = -(x - ox) * sa + (y - oy) * ca
+                if abs(rx) + abs(ry) < 52:
+                    img[y][x] = 240 if (int(rx + 60) // 18 + int(ry + 60) // 18) % 2 == 0 else 20
+
+    return img
+
+
+def generate_indoor_corridor_image(width: int = 640, height: int = 480) -> List[List[int]]:
+    """Generates a synthetic 3D perspective indoor corridor with floor tiles,
+    wall pillars, doorways, and ceiling light fixtures.
+    """
+    img = [[0] * width for _ in range(height)]
+    vx, vy = width // 2, height // 2 - 20  # Vanishing point
+
+    for y in range(height):
+        for x in range(width):
+            dx = x - vx
+            dy = y - vy
+            # Back wall at the vanishing point
+            if abs(dx) <= 60 and abs(dy) <= 45:
+                val = 120
+                if abs(dx) < 22 and dy > -10:
+                    val = 30  # Far doorway
+                elif abs(abs(dx) - 40) < 6 or abs(dy + 20) < 5:
+                    val = 210  # Window frames
+                img[y][x] = val
+            elif dy > 45 and abs(dx) * 45 < dy * 60:
+                # Perspective floor with checkerboard tiles
+                z = 1200.0 / max(1, dy)
+                u = dx * z / 120.0
+                tile = (int(z) + int(u + 100)) & 1
+                img[y][x] = 215 if tile else 45
+            elif dy < -45 and abs(dx) * 45 < (-dy) * 60:
+                # Perspective ceiling with recessed light panels
+                z = 1000.0 / max(1, -dy)
+                u = abs(dx) * z / 120.0
+                is_light = (int(z * 1.5) % 3 == 0) and (u < 1.2)
+                img[y][x] = 245 if is_light else 70
+            else:
+                # Left and right perspective walls with pillars and doorways
+                z = 1400.0 / max(1, abs(dx))
+                v = dy * z / 140.0
+                z_mod = int(z * 1.8) % 6
+                if z_mod == 0:
+                    img[y][x] = 225  # Bright pillar
+                elif z_mod in (2, 3) and -1.5 < v < 2.2:
+                    img[y][x] = 25   # Dark doorway / window recess
+                else:
+                    img[y][x] = max(30, min(200, 140 - int(z * 4)))
+
+    return img
+
+
+def generate_dense_burst_image(width: int = 640, height: int = 480) -> List[List[int]]:
+    """Generates a high-density corner stress test with micro-checkerboards and
+    pinwheels separated by 2-6 pixels to stress pipeline back-to-back keypoint bursts.
+    """
+    img = [[48] * width for _ in range(height)]
+
+    # Multi-pitch micro-checkerboard blocks across the frame
+    pitches = [6, 8, 10, 12, 14, 16]
+    for idx, pitch in enumerate(pitches):
+        bx = 40 + (idx % 3) * 190
+        by = 35 + (idx // 3) * 210
+        for y in range(by, min(height - 30, by + 170)):
+            for x in range(bx, min(width - 30, bx + 160)):
+                cell_x = (x - bx) // pitch
+                cell_y = (y - by) // pitch
+                if (cell_x + cell_y) & 1:
+                    img[y][x] = 235 if ((x - bx) % pitch > 1 and (y - by) % pitch > 1) else 150
+                else:
+                    img[y][x] = 16
+
+    return img
+
+
+def load_pgm_image(path: str, width: int = 640, height: int = 480) -> List[List[int]]:
+    """Loads a binary (P5) or ASCII (P2) PGM image and resizes to (width, height) if needed."""
+    with open(path, "rb") as f:
+        data = f.read()
+
+    idx = 0
+    tokens = []
+    while len(tokens) < 4:
+        while idx < len(data) and data[idx : idx + 1] in (b" ", b"\t", b"\r", b"\n"):
+            idx += 1
+        if data[idx : idx + 1] == b"#":
+            while idx < len(data) and data[idx : idx + 1] != b"\n":
+                idx += 1
+            continue
+        start = idx
+        while idx < len(data) and data[idx : idx + 1] not in (b" ", b"\t", b"\r", b"\n"):
+            idx += 1
+        tokens.append(data[start:idx].decode("ascii"))
+
+    magic, w_str, h_str, _ = tokens
+    in_w, in_h = int(w_str), int(h_str)
+    idx += 1
+
+    if magic == "P5":
+        raw = data[idx : idx + in_w * in_h]
+        img = [list(raw[r * in_w : (r + 1) * in_w]) for r in range(in_h)]
+    elif magic == "P2":
+        vals = [int(x) for x in data[idx:].decode("ascii").split()]
+        img = [vals[r * in_w : (r + 1) * in_w] for r in range(in_h)]
+    else:
+        raise ValueError(f"Unsupported PGM magic {magic} in {path}")
+
+    if in_w == width and in_h == height:
+        return img
+
+    out = [[0] * width for _ in range(height)]
+    for y in range(height):
+        sy = y * (in_h - 1) / max(1, height - 1)
+        y0 = int(sy)
+        y1 = min(y0 + 1, in_h - 1)
+        fy = sy - y0
+        for x in range(width):
+            sx = x * (in_w - 1) / max(1, width - 1)
+            x0 = int(sx)
+            x1 = min(x0 + 1, in_w - 1)
+            fx = sx - x0
+            v = (
+                img[y0][x0] * (1.0 - fx) * (1.0 - fy)
+                + img[y0][x1] * fx * (1.0 - fy)
+                + img[y1][x0] * (1.0 - fx) * fy
+                + img[y1][x1] * fx * fy
+            )
+            out[y][x] = max(0, min(255, int(round(v))))
+    return out
+
+
+def get_test_image_suite(
+    width: int = 640,
+    height: int = 480,
+    test_images_dir: str = None
+) -> List[Tuple[str, str, List[List[int]]]]:
+    """Returns a list of (name, description, image_2d) covering synthetic and real test images."""
+    import os
+    suite: List[Tuple[str, str, List[List[int]]]] = [
+        ("synthetic_default", "Checkerboard squares + diagonal bars", generate_synthetic_image(width, height)),
+        ("synthetic_rotated_shapes", "Siemens star + concentric rings + rotated polygons", generate_rotated_shapes_image(width, height)),
+        ("synthetic_indoor_corridor", "3D perspective corridor with floor tiles & pillars", generate_indoor_corridor_image(width, height)),
+        ("synthetic_dense_burst", "Multi-pitch micro-checkerboards (burst stress test)", generate_dense_burst_image(width, height)),
+    ]
+
+    if test_images_dir is None:
+        test_images_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_images")
+
+    real_specs = [
+        ("real_thesis_facade", "UIUC Thesis Fig. 2.7 building facade photo", "real_thesis_facade.pgm"),
+        ("real_landscape", "Natural mountain & sky landscape photo", "real_landscape.pgm"),
+        ("real_nebula_m16", "Eagle Nebula M16 astronomical photo", "real_nebula_m16.pgm"),
+        ("real_objects_collage", "4x3 collage of 12 real-world object photos", "real_objects_collage.pgm"),
+    ]
+    for name, desc, filename in real_specs:
+        pgm_path = os.path.join(test_images_dir, filename)
+        if os.path.exists(pgm_path):
+            suite.append((name, desc, load_pgm_image(pgm_path, width, height)))
+
+    return suite
+
+
 if __name__ == "__main__":
-    print("Reference model self-test")
+    print("Reference model self-test across test image suite")
 
     model = ORBHardwareReferenceModel(
         pixel_depth=6,
-        fast_threshold=20,
+        fast_threshold=5,
         pyramid_levels=4,
         img_width=640,
         img_height=480
     )
 
-    test_img = generate_synthetic_image(640, 480)
-    print(f"Test image: {len(test_img[0])}x{len(test_img)}")
-
-    features = model.extract_features(test_img)
-    print(f"Features: {len(features)}")
-
-    # Group features by pyramid level
-    by_level = {}
-    for f in features:
-        by_level[f.level] = by_level.get(f.level, 0) + 1
-
-    for lvl in range(4):
-        print(f"    - Level {lvl} ({model.level_dims[lvl][0]}x{model.level_dims[lvl][1]}): {by_level.get(lvl, 0)} features")
-
-    if features:
-        sample = features[0]
-        print("First feature:")
-        print(f"    - Level: {sample.level}")
-        print(f"    - Coord: ({sample.x}, {sample.y})")
-        print(f"    - Score: {sample.score}")
-        print(f"    - Orientation Sector: {sample.angle_sector} ({sample.angle_sector * 5.625:.1f} deg)")
-        print(f"    - Descriptor (Hex): 0x{sample.descriptor:064x}")
-
-        # Self-matching test
-        matches = match_features(features[:20], features[:20], threshold=50)
-        print(f"Self-match on the first 20 features: {len(matches)} matches")
+    for name, desc, test_img in get_test_image_suite(640, 480):
+        features = model.extract_features(test_img)
+        by_level = {0: 0, 1: 0, 2: 0, 3: 0}
+        for f in features:
+            by_level[f.level] = by_level.get(f.level, 0) + 1
+        lvl_str = ", ".join(f"L{l}={by_level[l]}" for l in range(4))
+        print(f"  {name:<26} ({desc}): {len(features):4d} features [{lvl_str}]")
 
     print("Done.")

@@ -1,12 +1,13 @@
-// FAST-9/16 corner detector on a 7x7 window. A pixel is a corner if 9
-// contiguous pixels on the radius-3 circle are all brighter than p + THRESHOLD
-// or all darker than p - THRESHOLD. The score is the sum of absolute differences.
+// FAST-9/16 corner detector on a 7x7 window. Pipelined across 2 stages after
+// the 7x7 window buffer:
+//   Stage 1: Contiguous-9 circle test + 8 pairwise sums of |circle[i] - center|
+//   Stage 2: 8-input SAD sum and corner score output
 
 `timescale 1ns / 1ps
 
 module fast #(
     parameter int PIXEL_WIDTH = 6,
-    parameter int THRESHOLD   = 20,
+    parameter int THRESHOLD   = 5,
     parameter int IMG_WIDTH   = 640,
     parameter int IMG_HEIGHT  = 480
 ) (
@@ -94,27 +95,27 @@ module fast #(
         circle[15] = win[0][2]; // (-1, -3)
     end
 
-    // Brighter / Darker comparison
-    logic [15:0] brighter, darker;
-    logic [31:0] brighter_2x, darker_2x;
-    logic [15:0] diff [0:15];
-    logic [15:0] score_accum;
+    // Stage 1 combinational: brighter/darker flags, contiguous-9 test, and pairwise SAD sums
+    logic [15:0]          brighter, darker;
+    logic [31:0]          brighter_2x, darker_2x;
+    logic [PIXEL_WIDTH:0] diff [0:15];
+    logic [PIXEL_WIDTH+1:0] pair_sum_comb [0:7];
 
     always_comb begin
-        score_accum = '0;
         for (int i = 0; i < N_CIRCLE; i++) begin
             brighter[i] = ({2'b0, circle[i]} > ({2'b0, center_pixel} + 8'(THRESHOLD)));
             darker[i]   = ({2'b0, center_pixel} > ({2'b0, circle[i]} + 8'(THRESHOLD)));
-
-            diff[i]     = (circle[i] > center_pixel) ? {10'b0, circle[i] - center_pixel} : {10'b0, center_pixel - circle[i]};
-            score_accum += diff[i];
+            diff[i]     = (circle[i] > center_pixel) ? {1'b0, circle[i] - center_pixel}
+                                                     : {1'b0, center_pixel - circle[i]};
+        end
+        for (int k = 0; k < 8; k++) begin
+            pair_sum_comb[k] = {1'b0, diff[2*k]} + {1'b0, diff[2*k + 1]};
         end
     end
 
     assign brighter_2x = {brighter, brighter};
     assign darker_2x   = {darker, darker};
 
-    // Contiguous 9-pixel test
     logic is_corner;
     always_comb begin
         is_corner = 1'b0;
@@ -125,15 +126,50 @@ module fast #(
         end
     end
 
-    // Emit one score per pixel once the window center reaches (0, 0), zeroing
-    // the 3-pixel border so the downstream NMS line buffers stay aligned.
     logic center_valid;
     logic in_interior;
 
     assign center_valid = pixel_valid_d1 && ((win_y > 12'd3) || (win_y == 12'd3 && win_x >= 12'd3));
     assign in_interior  = win_valid && (win_x >= 12'd6) && (win_y >= 12'd6);
 
-    // Register outputs
+    // Stage 1 pipeline registers
+    logic                   s1_valid;
+    logic                   s1_use_score;
+    logic [11:0]            s1_x, s1_y;
+    logic [PIXEL_WIDTH+1:0] s1_pair_sum [0:7];
+
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            s1_valid     <= 1'b0;
+            s1_use_score <= 1'b0;
+            s1_x         <= '0;
+            s1_y         <= '0;
+            for (int k = 0; k < 8; k++) begin
+                s1_pair_sum[k] <= '0;
+            end
+        end else begin
+            s1_valid     <= center_valid;
+            s1_use_score <= center_valid && in_interior && is_corner;
+            if (center_valid) begin
+                s1_x <= (win_x >= 12'd3) ? (win_x - 12'd3) : (win_x + 12'(IMG_WIDTH - 3));
+                s1_y <= (win_x >= 12'd3) ? (win_y - 12'd3) : (win_y - 12'd4);
+                for (int k = 0; k < 8; k++) begin
+                    s1_pair_sum[k] <= pair_sum_comb[k];
+                end
+            end
+        end
+    end
+
+    // Stage 2 combinational: sum the 8 registered pairwise SAD values
+    logic [15:0] score_accum_s2;
+    always_comb begin
+        score_accum_s2 = '0;
+        for (int k = 0; k < 8; k++) begin
+            score_accum_s2 += 16'(s1_pair_sum[k]);
+        end
+    end
+
+    // Stage 2 output registers
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             corner_valid <= 1'b0;
@@ -141,11 +177,11 @@ module fast #(
             corner_x     <= '0;
             corner_y     <= '0;
         end else begin
-            corner_valid <= center_valid;
-            corner_score <= (center_valid && in_interior && is_corner) ? score_accum : 16'd0;
-            if (center_valid) begin
-                corner_x <= (win_x >= 12'd3) ? (win_x - 12'd3) : (win_x + 12'(IMG_WIDTH - 3));
-                corner_y <= (win_x >= 12'd3) ? (win_y - 12'd3) : (win_y - 12'd4);
+            corner_valid <= s1_valid;
+            corner_score <= s1_use_score ? score_accum_s2 : 16'd0;
+            if (s1_valid) begin
+                corner_x <= s1_x;
+                corner_y <= s1_y;
             end
         end
     end

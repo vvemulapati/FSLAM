@@ -1,6 +1,6 @@
 // Single-scale ORB pipeline: FAST -> 3x3 NMS -> keypoint FIFO -> orientation
-// -> rBRIEF. Orientation and rBRIEF work on a 7x7-blurred copy of the input;
-// rBRIEF samples it through a 37x37 window buffer.
+// -> rBRIEF. Orientation and rBRIEF share a single 37x37 window_buffer on the
+// 7x7-blurred stream (saving 36 BRAMs per pyramid level, or 144 BRAMs total).
 
 `timescale 1ns / 1ps
 
@@ -9,8 +9,8 @@ module feature_extractor #(
     parameter int IMG_WIDTH       = 640,
     parameter int IMG_HEIGHT      = 480,
     parameter int DESCRIPTOR_BITS = 256,
-    parameter int FAST_THRESHOLD  = 20,
-    parameter int FIFO_DEPTH      = 64,
+    parameter int FAST_THRESHOLD  = 5,
+    parameter int FIFO_DEPTH      = 1024,
     parameter int ANGLE_BITS      = 6,
     parameter int COORD_BITS      = 6
 ) (
@@ -37,7 +37,7 @@ module feature_extractor #(
     output logic                                  fifo_empty
 );
 
-    // FAST
+    // FAST (2-stage pipelined after 7x7 window)
     logic        fast_valid;
     logic [15:0] fast_score;
     logic [11:0] fast_x, fast_y;
@@ -80,7 +80,7 @@ module feature_extractor #(
         .keypoint_y(nms_y)
     );
 
-    // 7x7 blur (input to orientation and rBRIEF)
+    // 7x7 blur (2-stage pipelined after 7x7 window, aligned with fast_x/fast_y)
     logic                   blur_valid;
     logic [PIXEL_WIDTH-1:0] blur_pixel;
 
@@ -98,23 +98,18 @@ module feature_extractor #(
         .pixel_out(blur_pixel)
     );
 
-    // Delay blurred stream by 1 cycle so u_brief_win_buf aligns with ori_valid
+    // Shared 37x37 window on the blurred stream, used by both orientation and rBRIEF
+    logic [PIXEL_WIDTH-1:0] blur_win [36:0][36:0];
+    logic                   blur_win_valid;
     logic                   blur_valid_d1;
-    logic [PIXEL_WIDTH-1:0] blur_pixel_d1;
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             blur_valid_d1 <= 1'b0;
-            blur_pixel_d1 <= '0;
         end else begin
             blur_valid_d1 <= blur_valid;
-            blur_pixel_d1 <= blur_pixel;
         end
     end
-
-    // 37x37 window on the blurred stream, sampled by rBRIEF
-    logic [PIXEL_WIDTH-1:0] blur_win [36:0][36:0];
-    logic                   blur_win_valid;
 
     window_buffer #(
         .DATA_WIDTH(PIXEL_WIDTH),
@@ -123,11 +118,24 @@ module feature_extractor #(
     ) u_brief_win_buf (
         .clk(clk),
         .rst_n(rst_n),
-        .in_valid(blur_valid_d1),
-        .in_data(blur_pixel_d1),
+        .in_valid(blur_valid),
+        .in_data(blur_pixel),
         .out_valid(blur_win_valid),
         .win(blur_win)
     );
+
+    // Extract rightmost incoming column Cin (blur_win[0..36][0]) for orientation
+    logic [PIXEL_WIDTH-1:0] ori_col_in [36:0];
+    always_comb begin
+        for (int r = 0; r < 37; r++) begin
+            ori_col_in[r] = blur_win[r][0];
+        end
+    end
+
+    // Only enqueue keypoints whose 37x37 patch (radius 18) lies within the
+    // valid interior [18, IMG_WIDTH-22] x [18, IMG_HEIGHT-22].
+    wire nms_in_bounds = (nms_x >= 12'd18) && (nms_x <= 12'(IMG_WIDTH - 22)) &&
+                         (nms_y >= 12'd18) && (nms_y <= 12'(IMG_HEIGHT - 22));
 
     // Keypoint FIFO: {score, y, x} from NMS
     logic        kp_fifo_full, kp_fifo_empty;
@@ -144,7 +152,7 @@ module feature_extractor #(
     ) u_keypoint_fifo (
         .clk(clk),
         .rst_n(rst_n),
-        .wr_en(nms_valid),
+        .wr_en(nms_valid && nms_in_bounds),
         .din(kp_fifo_din),
         .full(kp_fifo_full),
         .almost_full(),
@@ -204,7 +212,7 @@ module feature_extractor #(
         end
     end
 
-    // Orientation
+    // Orientation (4-stage pipelined, sharing u_brief_win_buf column 0)
     orientation #(
         .PIXEL_WIDTH(PIXEL_WIDTH),
         .WINDOW_SIZE(37),
@@ -217,8 +225,9 @@ module feature_extractor #(
         .keypoint_score(disp_score),
         .keypoint_x(disp_x),
         .keypoint_y(disp_y),
-        .pixel_valid(blur_valid),
-        .pixel_in(blur_pixel),
+        .col_valid(blur_valid_d1),
+        .win_valid(blur_win_valid),
+        .col_in(ori_col_in),
         .orientation_out(ori_angle),
         .keypoint_score_out(ori_score),
         .keypoint_x_out(ori_x),
@@ -227,7 +236,7 @@ module feature_extractor #(
         .busy(ori_busy)
     );
 
-    // rBRIEF
+    // rBRIEF (2-stage pipelined, latching blur_win on disp_valid && blur_win_valid)
     brief #(
         .PIXEL_WIDTH(PIXEL_WIDTH),
         .WINDOW_SIZE(37),
@@ -237,6 +246,7 @@ module feature_extractor #(
     ) u_brief (
         .clk(clk),
         .rst_n(rst_n),
+        .patch_latch(disp_valid && blur_win_valid),
         .start(ori_valid),
         .keypoint_score_in(ori_score),
         .keypoint_x_in(ori_x),
