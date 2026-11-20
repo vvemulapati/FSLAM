@@ -35,6 +35,7 @@ module orb #(
     output logic [5:0]                            feature_orientation,
     output logic [1:0]                            feature_level,
 
+    output logic                                  stall_req,
     output logic                                  processing,
     output logic [10:0]                           total_features
 );
@@ -68,6 +69,7 @@ module orb #(
     logic [11:0]                        lvl_feat_x      [PYRAMID_LEVELS-1:0];
     logic [11:0]                        lvl_feat_y      [PYRAMID_LEVELS-1:0];
     logic [5:0]                         lvl_feat_ori    [PYRAMID_LEVELS-1:0];
+    logic [PYRAMID_LEVELS-1:0]          lvl_stall;
     logic [PYRAMID_LEVELS-1:0]          lvl_busy;
     logic [PYRAMID_LEVELS-1:0]          lvl_fifo_empty;
 
@@ -105,6 +107,7 @@ module orb #(
                 .feature_x(lvl_feat_x[lvl]),
                 .feature_y(lvl_feat_y[lvl]),
                 .feature_orientation(lvl_feat_ori[lvl]),
+                .stall_req(lvl_stall[lvl]),
                 .busy(lvl_busy[lvl]),
                 .fifo_empty(lvl_fifo_empty[lvl])
             );
@@ -186,6 +189,7 @@ module orb #(
         end
     end
 
+    assign stall_req      = |lvl_stall;
     assign total_features = count_reg;
     assign processing     = (|lvl_busy) || (!(&lvl_fifo_empty)) || (!(&lvl_out_empty)) || (|lvl_feat_valid) || feature_valid;
 

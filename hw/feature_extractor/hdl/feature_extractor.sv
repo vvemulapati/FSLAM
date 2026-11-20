@@ -33,6 +33,7 @@ module feature_extractor #(
     output logic [ANGLE_BITS-1:0]                 feature_orientation,
 
     // Pipeline status
+    output logic                                  stall_req,
     output logic                                  busy,
     output logic                                  fifo_empty
 );
@@ -241,18 +242,19 @@ module feature_extractor #(
         .WINDOW_SIZE(37),
         .DESCRIPTOR_BITS(DESCRIPTOR_BITS),
         .ANGLE_BITS(ANGLE_BITS),
-        .COORD_BITS(COORD_BITS)
+        .COORD_BITS(COORD_BITS),
+        .PAIRS_PER_CYCLE(2)
     ) u_brief (
         .clk(clk),
         .rst_n(rst_n),
+        .col_valid(blur_valid_d1),
+        .col_in(ori_col_in),
         .patch_latch(disp_valid && blur_win_valid),
         .start(ori_valid),
         .keypoint_score_in(ori_score),
         .keypoint_x_in(ori_x),
         .keypoint_y_in(ori_y),
         .orientation(ori_angle),
-        .window_buffer(blur_win),
-        .window_valid(blur_win_valid),
         .pattern_coords(brief_pattern),
         .descriptor(feature_descriptor),
         .keypoint_score_out(feature_score),
@@ -260,6 +262,7 @@ module feature_extractor #(
         .keypoint_y_out(feature_y),
         .orientation_out(feature_orientation),
         .descriptor_valid(feature_valid),
+        .stall_req(stall_req),
         .busy(brief_busy)
     );
 

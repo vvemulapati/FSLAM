@@ -59,6 +59,11 @@
 #include <opencv2/features2d/features2d.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <vector>
+#include <deque>
+#include <cstdlib>
+#include <cstring>
+#include <cstdint>
+#include <algorithm>
 
 #include "ORBextractor.h"
 
@@ -72,6 +77,270 @@ namespace ORB_SLAM2
 const int PATCH_SIZE = 31;
 const int HALF_PATCH_SIZE = 15;
 const int EDGE_THRESHOLD = 19;
+const int HW_HALF_WIN = 18;
+
+static const int HW_CIRCLE_OFFSETS[16][2] = {
+    {-3,  0}, {-3,  1}, {-2,  2}, {-1,  3},
+    { 0,  3}, { 1,  3}, { 2,  2}, { 3,  1},
+    { 3,  0}, { 3, -1}, { 2, -2}, { 1, -3},
+    { 0, -3}, {-1, -3}, {-2, -2}, {-3, -1}
+};
+
+static const int HW_TAN_THRESH_15[15] = {
+    25, 51, 78, 106, 137, 171, 210, 256, 312, 383, 479, 618, 844, 1287, 2599
+};
+
+static const int8_t HW_COS_LUT_64[64] = {
+     127,  126,  125,  122,  117,  112,  106,   98,
+      90,   81,   71,   60,   49,   37,   25,   12,
+       0,  -12,  -25,  -37,  -49,  -60,  -71,  -81,
+     -90,  -98, -106, -112, -117, -122, -125, -126,
+    -127, -126, -125, -122, -117, -112, -106,  -98,
+     -90,  -81,  -71,  -60,  -49,  -37,  -25,  -12,
+       0,   12,   25,   37,   49,   60,   71,   81,
+      90,   98,  106,  112,  117,  122,  125,  126
+};
+
+static const int8_t HW_SIN_LUT_64[64] = {
+       0,   12,   25,   37,   49,   60,   71,   81,
+      90,   98,  106,  112,  117,  122,  125,  126,
+     127,  126,  125,  122,  117,  112,  106,   98,
+      90,   81,   71,   60,   49,   37,   25,   12,
+       0,  -12,  -25,  -37,  -49,  -60,  -71,  -81,
+     -90,  -98, -106, -112, -117, -122, -125, -126,
+    -127, -126, -125, -122, -117, -112, -106,  -98,
+     -90,  -81,  -71,  -60,  -49,  -37,  -25,  -12
+};
+
+static void quantizeTo6BitHW(const Mat& src, Mat& dst)
+{
+    dst.create(src.rows, src.cols, CV_8UC1);
+    for (int y = 0; y < src.rows; ++y)
+    {
+        const uchar* srow = src.ptr<uchar>(y);
+        uchar* drow = dst.ptr<uchar>(y);
+        for (int x = 0; x < src.cols; ++x)
+            drow[x] = srow[x] >> 2;
+    }
+}
+
+static void scaleDown5_6_HW(const Mat& src, Mat& dst)
+{
+    const int in_w = src.cols;
+    const int in_h = src.rows;
+    const int out_w = (in_w * 5) / 6;
+    const int out_h = (in_h * 5) / 6;
+    dst.create(out_h, out_w, CV_8UC1);
+
+    int out_y = 0;
+    for (int y = 0; y < in_h - 1 && out_y < out_h; ++y)
+    {
+        int sy = y % 6;
+        if (sy == 5)
+            continue;
+        int inv_y = 5 - sy;
+        const uchar* row0 = src.ptr<uchar>(y);
+        const uchar* row1 = src.ptr<uchar>(y + 1);
+        uchar* dst_row = dst.ptr<uchar>(out_y);
+
+        int out_x = 0;
+        for (int x = 0; x < in_w - 1 && out_x < out_w; ++x)
+        {
+            int sx = x % 6;
+            if (sx == 5)
+                continue;
+            int inv_x = 5 - sx;
+
+            int w00 = inv_x * inv_y;
+            int w01 = sx * inv_y;
+            int w10 = inv_x * sy;
+            int w11 = sx * sy;
+
+            int weighted_sum = row0[x] * w00 + row0[x + 1] * w01 +
+                               row1[x] * w10 + row1[x + 1] * w11;
+            dst_row[out_x] = (uchar)((weighted_sum * 41 + 512) >> 10);
+            ++out_x;
+        }
+        ++out_y;
+    }
+}
+
+static void gaussianBlur7x7_HW(const Mat& src, Mat& dst)
+{
+    const int h = src.rows;
+    const int w = src.cols;
+    dst = Mat::zeros(h, w, CV_8UC1);
+    if (h < 7 || w < 7)
+        return;
+
+    static const int k1d[7] = {1, 6, 15, 20, 15, 6, 1};
+    Mat rowSums = Mat::zeros(h, w, CV_32SC1);
+
+    for (int y = 0; y < h; ++y)
+    {
+        const uchar* srow = src.ptr<uchar>(y);
+        int* rrow = rowSums.ptr<int>(y);
+        for (int x = 3; x < w - 3; ++x)
+        {
+            rrow[x] = (srow[x - 3] + srow[x + 3]) * k1d[0] +
+                      (srow[x - 2] + srow[x + 2]) * k1d[1] +
+                      (srow[x - 1] + srow[x + 1]) * k1d[2] +
+                      srow[x] * k1d[3];
+        }
+    }
+
+    for (int y = 3; y < h - 3; ++y)
+    {
+        const int* r_m3 = rowSums.ptr<int>(y - 3);
+        const int* r_m2 = rowSums.ptr<int>(y - 2);
+        const int* r_m1 = rowSums.ptr<int>(y - 1);
+        const int* r_0  = rowSums.ptr<int>(y);
+        const int* r_p1 = rowSums.ptr<int>(y + 1);
+        const int* r_p2 = rowSums.ptr<int>(y + 2);
+        const int* r_p3 = rowSums.ptr<int>(y + 3);
+        uchar* drow = dst.ptr<uchar>(y);
+
+        for (int x = 3; x < w - 3; ++x)
+        {
+            int conv_sum = (r_m3[x] + r_p3[x]) * k1d[0] +
+                           (r_m2[x] + r_p2[x]) * k1d[1] +
+                           (r_m1[x] + r_p1[x]) * k1d[2] +
+                           r_0[x] * k1d[3];
+            drow[x] = (uchar)((conv_sum + 2048) >> 12);
+        }
+    }
+}
+
+static int fast9ScoreHW(const Mat& img, int x, int y, int thresh)
+{
+    const int center = img.at<uchar>(y, x);
+    unsigned int brighter = 0;
+    unsigned int darker = 0;
+    int sad = 0;
+
+    for (int i = 0; i < 16; ++i)
+    {
+        int p = img.at<uchar>(y + HW_CIRCLE_OFFSETS[i][0], x + HW_CIRCLE_OFFSETS[i][1]);
+        if (p > center + thresh)
+            brighter |= (1u << i);
+        if (center > p + thresh)
+            darker |= (1u << i);
+        sad += (p > center) ? (p - center) : (center - p);
+    }
+
+    unsigned int b2 = brighter | (brighter << 16);
+    unsigned int d2 = darker | (darker << 16);
+    for (int i = 0; i < 16; ++i)
+    {
+        if (((b2 >> i) & 0x1FFu) == 0x1FFu || ((d2 >> i) & 0x1FFu) == 0x1FFu)
+            return sad;
+    }
+    return 0;
+}
+
+static int computeOrientationSectorHW(const Mat& blurredImg, int cx, int cy)
+{
+    const int h = blurredImg.rows;
+    const int w = blurredImg.cols;
+    int64_t m01 = 0;
+    int64_t m10 = 0;
+
+    for (int dy = -HW_HALF_WIN; dy <= HW_HALF_WIN; ++dy)
+    {
+        int py = cy + dy;
+        if (py < 0 || py >= h)
+            continue;
+        const uchar* row = blurredImg.ptr<uchar>(py);
+        for (int dx = -HW_HALF_WIN; dx <= HW_HALF_WIN; ++dx)
+        {
+            int px = cx + dx;
+            if (px < 0 || px >= w)
+                continue;
+            int val = row[px];
+            m01 += (int64_t)val * dy;
+            m10 += (int64_t)val * dx;
+        }
+    }
+
+    int64_t abs_m01 = (m01 >= 0) ? m01 : -m01;
+    int64_t abs_m10 = (m10 >= 0) ? m10 : -m10;
+
+    int quadrant = 0;
+    if (m10 >= 0 && m01 >= 0)      quadrant = 0;
+    else if (m10 < 0 && m01 >= 0)  quadrant = 1;
+    else if (m10 < 0 && m01 < 0)   quadrant = 2;
+    else                           quadrant = 3;
+
+    int sector_in_quad = 15;
+    for (int s = 0; s < 15; ++s)
+    {
+        if ((abs_m10 * HW_TAN_THRESH_15[s]) >= (abs_m01 << 8))
+        {
+            sector_in_quad = s;
+            break;
+        }
+    }
+
+    int quad_sector = (quadrant & 1) ? (15 - sector_in_quad) : sector_in_quad;
+    return (quadrant << 4) | quad_sector;
+}
+
+static void computeOrbDescriptorHW(const KeyPoint& kpt,
+                                   const Mat& blurredImg, const Point* pattern,
+                                   uchar* desc)
+{
+    const int sector = ((int)cvRound(kpt.angle / 5.625f)) & 0x3F;
+    const int cos_val = HW_COS_LUT_64[sector];
+    const int sin_val = HW_SIN_LUT_64[sector];
+    const int cx = cvRound(kpt.pt.x);
+    const int cy = cvRound(kpt.pt.y);
+    const int w = blurredImg.cols;
+    const int h = blurredImg.rows;
+
+    for (int i = 0; i < 32; ++i, pattern += 16)
+    {
+        int val = 0;
+        for (int b = 0; b < 8; ++b)
+        {
+            int x1 = pattern[2 * b].x;
+            int y1 = pattern[2 * b].y;
+            int x2 = pattern[2 * b + 1].x;
+            int y2 = pattern[2 * b + 1].y;
+
+            int rot_x1 = (x1 * cos_val - y1 * sin_val) >> 7;
+            int rot_y1 = (x1 * sin_val + y1 * cos_val) >> 7;
+            int rot_x2 = (x2 * cos_val - y2 * sin_val) >> 7;
+            int rot_y2 = (x2 * sin_val + y2 * cos_val) >> 7;
+
+            int px1 = cx + rot_x1;
+            int py1 = cy + rot_y1;
+            int px2 = cx + rot_x2;
+            int py2 = cy + rot_y2;
+
+            int t0 = (rot_x1 >= -HW_HALF_WIN && rot_x1 <= HW_HALF_WIN &&
+                      rot_y1 >= -HW_HALF_WIN && rot_y1 <= HW_HALF_WIN &&
+                      px1 >= 0 && px1 < w && py1 >= 0 && py1 < h)
+                     ? blurredImg.at<uchar>(py1, px1) : 0;
+            int t1 = (rot_x2 >= -HW_HALF_WIN && rot_x2 <= HW_HALF_WIN &&
+                      rot_y2 >= -HW_HALF_WIN && rot_y2 <= HW_HALF_WIN &&
+                      px2 >= 0 && px2 < w && py2 >= 0 && py2 < h)
+                     ? blurredImg.at<uchar>(py2, px2) : 0;
+
+            if (t0 < t1)
+                val |= (1 << b);
+        }
+        desc[i] = (uchar)val;
+    }
+}
+
+static void computeDescriptorsHW(const Mat& blurredImg, vector<KeyPoint>& keypoints,
+                                 Mat& descriptors, const vector<Point>& pattern)
+{
+    if (descriptors.rows != (int)keypoints.size() || descriptors.cols != 32 || descriptors.type() != CV_8UC1)
+        descriptors = Mat::zeros((int)keypoints.size(), 32, CV_8UC1);
+    for (size_t i = 0; i < keypoints.size(); ++i)
+        computeOrbDescriptorHW(keypoints[i], blurredImg, &pattern[0], descriptors.ptr((int)i));
+}
 
 
 static float IC_Angle(const Mat& image, Point2f pt,  const vector<int> & u_max)
@@ -408,10 +677,21 @@ static int bit_pattern_31_[256*4] =
 };
 
 ORBextractor::ORBextractor(int _nfeatures, float _scaleFactor, int _nlevels,
-         int _iniThFAST, int _minThFAST):
+         int _iniThFAST, int _minThFAST, int _mode):
     nfeatures(_nfeatures), scaleFactor(_scaleFactor), nlevels(_nlevels),
-    iniThFAST(_iniThFAST), minThFAST(_minThFAST)
+    iniThFAST(_iniThFAST), minThFAST(_minThFAST), mMode(_mode)
 {
+    const char* envMode = std::getenv("FSLAM_ORB_MODE");
+    if (envMode != NULL)
+    {
+        if (std::strcmp(envMode, "0") == 0 || std::strcmp(envMode, "opencv") == 0)
+            mMode = OPENCV_MODE;
+        else if (std::strcmp(envMode, "1") == 0 || std::strcmp(envMode, "hybrid") == 0)
+            mMode = HYBRID_HW_MODE;
+        else if (std::strcmp(envMode, "2") == 0 || std::strcmp(envMode, "rtl") == 0)
+            mMode = RTL_EXACT_MODE;
+    }
+
     mvScaleFactor.resize(nlevels);
     mvLevelSigma2.resize(nlevels);
     mvScaleFactor[0]=1.0f;
@@ -431,6 +711,8 @@ ORBextractor::ORBextractor(int _nfeatures, float _scaleFactor, int _nlevels,
     }
 
     mvImagePyramid.resize(nlevels);
+    mvQuantizedPyramidHW.resize(nlevels);
+    mvBlurredPyramidHW.resize(nlevels);
 
     mnFeaturesPerLevel.resize(nlevels);
     float factor = 1.0f / scaleFactor;
@@ -1053,12 +1335,65 @@ void ORBextractor::operator()( InputArray _image, InputArray _mask, vector<KeyPo
     Mat image = _image.getMat();
     assert(image.type() == CV_8UC1 );
 
-    // Pre-compute the scale pyramid
-    ComputePyramid(image);
+    if (mMode == OPENCV_MODE)
+    {
+        ComputePyramid(image);
 
-    vector < vector<KeyPoint> > allKeypoints;
-    ComputeKeyPointsOctTree(allKeypoints);
-    //ComputeKeyPointsOld(allKeypoints);
+        vector < vector<KeyPoint> > allKeypoints;
+        ComputeKeyPointsOctTree(allKeypoints);
+
+        Mat descriptors;
+
+        int nkeypoints = 0;
+        for (int level = 0; level < nlevels; ++level)
+            nkeypoints += (int)allKeypoints[level].size();
+        if( nkeypoints == 0 )
+            _descriptors.release();
+        else
+        {
+            _descriptors.create(nkeypoints, 32, CV_8U);
+            descriptors = _descriptors.getMat();
+        }
+
+        _keypoints.clear();
+        _keypoints.reserve(nkeypoints);
+
+        int offset = 0;
+        for (int level = 0; level < nlevels; ++level)
+        {
+            vector<KeyPoint>& keypoints = allKeypoints[level];
+            int nkeypointsLevel = (int)keypoints.size();
+
+            if(nkeypointsLevel==0)
+                continue;
+
+            Mat workingMat = mvImagePyramid[level].clone();
+            GaussianBlur(workingMat, workingMat, Size(7, 7), 2, 2, BORDER_REFLECT_101);
+
+            Mat desc = descriptors.rowRange(offset, offset + nkeypointsLevel);
+            computeDescriptors(workingMat, keypoints, desc, pattern);
+
+            offset += nkeypointsLevel;
+
+            if (level != 0)
+            {
+                float scale = mvScaleFactor[level];
+                for (vector<KeyPoint>::iterator keypoint = keypoints.begin(),
+                     keypointEnd = keypoints.end(); keypoint != keypointEnd; ++keypoint)
+                    keypoint->pt *= scale;
+            }
+            _keypoints.insert(_keypoints.end(), keypoints.begin(), keypoints.end());
+        }
+        return;
+    }
+
+    ComputePyramidHW(image);
+
+    vector<vector<KeyPoint> > allKeypoints;
+    if (mMode == RTL_EXACT_MODE)
+        ComputeKeyPointsRTLExact(allKeypoints);
+    else
+        ComputeKeyPointsOctTreeHW(allKeypoints);
 
     Mat descriptors;
 
@@ -1085,25 +1420,18 @@ void ORBextractor::operator()( InputArray _image, InputArray _mask, vector<KeyPo
         if(nkeypointsLevel==0)
             continue;
 
-        // preprocess the resized image
-        Mat workingMat = mvImagePyramid[level].clone();
-        GaussianBlur(workingMat, workingMat, Size(7, 7), 2, 2, BORDER_REFLECT_101);
-
-        // Compute the descriptors
         Mat desc = descriptors.rowRange(offset, offset + nkeypointsLevel);
-        computeDescriptors(workingMat, keypoints, desc, pattern);
+        computeDescriptorsHW(mvBlurredPyramidHW[level], keypoints, desc, pattern);
 
         offset += nkeypointsLevel;
 
-        // Scale keypoint coordinates
         if (level != 0)
         {
-            float scale = mvScaleFactor[level]; //getScale(level, firstLevel, scaleFactor);
+            float scale = mvScaleFactor[level];
             for (vector<KeyPoint>::iterator keypoint = keypoints.begin(),
                  keypointEnd = keypoints.end(); keypoint != keypointEnd; ++keypoint)
                 keypoint->pt *= scale;
         }
-        // And add the keypoints to the output
         _keypoints.insert(_keypoints.end(), keypoints.begin(), keypoints.end());
     }
 }
@@ -1133,6 +1461,231 @@ void ORBextractor::ComputePyramid(cv::Mat image)
         }
     }
 
+}
+
+void ORBextractor::ComputePyramidHW(cv::Mat image)
+{
+    mvQuantizedPyramidHW.resize(nlevels);
+    mvBlurredPyramidHW.resize(nlevels);
+    mvImagePyramid.resize(nlevels);
+
+    quantizeTo6BitHW(image, mvQuantizedPyramidHW[0]);
+    for (int level = 1; level < nlevels; ++level)
+        scaleDown5_6_HW(mvQuantizedPyramidHW[level - 1], mvQuantizedPyramidHW[level]);
+
+    for (int level = 0; level < nlevels; ++level)
+    {
+        gaussianBlur7x7_HW(mvQuantizedPyramidHW[level], mvBlurredPyramidHW[level]);
+
+        Size sz(mvQuantizedPyramidHW[level].cols, mvQuantizedPyramidHW[level].rows);
+        Size wholeSize(sz.width + EDGE_THRESHOLD * 2, sz.height + EDGE_THRESHOLD * 2);
+        Mat temp(wholeSize, image.type());
+        mvImagePyramid[level] = temp(Rect(EDGE_THRESHOLD, EDGE_THRESHOLD, sz.width, sz.height));
+
+        Mat scaled8(sz.height, sz.width, CV_8UC1);
+        for (int y = 0; y < sz.height; ++y)
+        {
+            const uchar* qrow = mvQuantizedPyramidHW[level].ptr<uchar>(y);
+            uchar* srow = scaled8.ptr<uchar>(y);
+            for (int x = 0; x < sz.width; ++x)
+                srow[x] = (uchar)(qrow[x] << 2);
+        }
+        copyMakeBorder(scaled8, temp, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD,
+                       BORDER_REFLECT_101);
+    }
+}
+
+void ORBextractor::ComputeKeyPointsRTLExact(vector<vector<KeyPoint> >& allKeypoints)
+{
+    allKeypoints.resize(nlevels);
+    const int thresh = (iniThFAST <= 6) ? std::max(1, iniThFAST) : std::max(1, iniThFAST >> 2);
+    int fifoDepth = 0;
+    const char* envFifo = std::getenv("FSLAM_FIFO_DEPTH");
+    if (envFifo != NULL)
+        fifoDepth = std::atoi(envFifo);
+
+    for (int level = 0; level < nlevels; ++level)
+    {
+        const Mat& img = mvQuantizedPyramidHW[level];
+        const Mat& blurred = mvBlurredPyramidHW[level];
+        const int h = img.rows;
+        const int w = img.cols;
+        vector<KeyPoint>& keypoints = allKeypoints[level];
+        keypoints.clear();
+
+        if (h < 40 || w < 40)
+            continue;
+
+        Mat scores = Mat::zeros(h, w, CV_32SC1);
+        for (int y = 3; y < h - 3; ++y)
+        {
+            int* srow = scores.ptr<int>(y);
+            for (int x = 3; x < w - 3; ++x)
+                srow[x] = fast9ScoreHW(img, x, y, thresh);
+        }
+
+        const float scaledPatchSize = (float)(PATCH_SIZE * mvScaleFactor[level]);
+        std::deque<int> kpFifo;
+        const int fifoSpan = 17 * w + 17;
+        for (int y = 18; y < h - 21; ++y)
+        {
+            const int* r_m1 = scores.ptr<int>(y - 1);
+            const int* r_0  = scores.ptr<int>(y);
+            const int* r_p1 = scores.ptr<int>(y + 1);
+
+            for (int x = 18; x < w - 21; ++x)
+            {
+                int center = r_0[x];
+                if (center <= 0)
+                    continue;
+
+                if (center <= r_m1[x - 1] || center <= r_m1[x] ||
+                    center <= r_m1[x + 1] || center <= r_0[x - 1])
+                    continue;
+
+                if (center < r_0[x + 1]  || center < r_p1[x - 1] ||
+                    center < r_p1[x]     || center < r_p1[x + 1])
+                    continue;
+
+                if (fifoDepth > 0)
+                {
+                    int pos = y * w + x;
+                    while (!kpFifo.empty() && kpFifo.front() <= pos - fifoSpan)
+                        kpFifo.pop_front();
+                    if ((int)kpFifo.size() >= fifoDepth)
+                        continue;
+                    kpFifo.push_back(pos);
+                }
+
+                int sector = computeOrientationSectorHW(blurred, x, y);
+                KeyPoint kp;
+                kp.pt.x = (float)x;
+                kp.pt.y = (float)y;
+                kp.response = (float)center;
+                kp.octave = level;
+                kp.size = scaledPatchSize;
+                kp.angle = (float)sector * 5.625f;
+                keypoints.push_back(kp);
+            }
+        }
+    }
+}
+
+void ORBextractor::ComputeKeyPointsOctTreeHW(vector<vector<KeyPoint> >& allKeypoints)
+{
+    allKeypoints.resize(nlevels);
+    const float W = 30.0f;
+    const int iniTh6 = (iniThFAST <= 6) ? std::max(1, iniThFAST) : std::max(1, iniThFAST >> 2);
+    const int minTh6 = (minThFAST <= 6) ? std::max(1, minThFAST) : std::max(1, minThFAST >> 2);
+
+    for (int level = 0; level < nlevels; ++level)
+    {
+        const Mat& img = mvQuantizedPyramidHW[level];
+        const Mat& blurred = mvBlurredPyramidHW[level];
+        const int h = img.rows;
+        const int w = img.cols;
+        vector<KeyPoint>& keypoints = allKeypoints[level];
+        keypoints.clear();
+
+        if (h < 42 || w < 42)
+            continue;
+
+        const int minBorderX = 15;
+        const int minBorderY = 15;
+        const int maxBorderX = w - 18;
+        const int maxBorderY = h - 18;
+
+        const float width = (float)(maxBorderX - minBorderX);
+        const float height = (float)(maxBorderY - minBorderY);
+        if (width <= 6.0f || height <= 6.0f)
+            continue;
+
+        const int nCols = std::max(1, (int)(width / W));
+        const int nRows = std::max(1, (int)(height / W));
+        const int wCell = (int)ceil(width / nCols);
+        const int hCell = (int)ceil(height / nRows);
+
+        Mat scoresIni = Mat::zeros(h, w, CV_32SC1);
+        Mat scoresMin = Mat::zeros(h, w, CV_32SC1);
+        for (int y = minBorderY; y < maxBorderY; ++y)
+        {
+            int* sIni = scoresIni.ptr<int>(y);
+            int* sMin = scoresMin.ptr<int>(y);
+            for (int x = minBorderX; x < maxBorderX; ++x)
+            {
+                sIni[x] = fast9ScoreHW(img, x, y, iniTh6);
+                sMin[x] = fast9ScoreHW(img, x, y, minTh6);
+            }
+        }
+
+        vector<cv::KeyPoint> vToDistributeKeys;
+        vToDistributeKeys.reserve(nfeatures * 10);
+
+        for (int i = 0; i < nRows; ++i)
+        {
+            const int iniY = minBorderY + i * hCell;
+            int maxY = std::min(iniY + hCell + 6, maxBorderY);
+            if (iniY >= maxBorderY - 3)
+                continue;
+
+            for (int j = 0; j < nCols; ++j)
+            {
+                const int iniX = minBorderX + j * wCell;
+                int maxX = std::min(iniX + wCell + 6, maxBorderX);
+                if (iniX >= maxBorderX - 6)
+                    continue;
+
+                vector<cv::KeyPoint> vKeysCell;
+                const Mat* scoreGrid = &scoresIni;
+                for (int pass = 0; pass < 2; ++pass)
+                {
+                    if (pass == 1)
+                        scoreGrid = &scoresMin;
+                    for (int y = iniY + 3; y < maxY - 3; ++y)
+                    {
+                        const int* r_m1 = scoreGrid->ptr<int>(y - 1);
+                        const int* r_0  = scoreGrid->ptr<int>(y);
+                        const int* r_p1 = scoreGrid->ptr<int>(y + 1);
+                        for (int x = iniX + 3; x < maxX - 3; ++x)
+                        {
+                            int c = r_0[x];
+                            if (c <= 0)
+                                continue;
+                            if (c <= r_m1[x - 1] || c <= r_m1[x] || c <= r_m1[x + 1] || c <= r_0[x - 1])
+                                continue;
+                            if (c < r_0[x + 1] || c < r_p1[x - 1] || c < r_p1[x] || c < r_p1[x + 1])
+                                continue;
+                            KeyPoint kp;
+                            kp.pt.x = (float)((x - iniX) + j * wCell);
+                            kp.pt.y = (float)((y - iniY) + i * hCell);
+                            kp.response = (float)c;
+                            kp.octave = level;
+                            vKeysCell.push_back(kp);
+                        }
+                    }
+                    if (!vKeysCell.empty())
+                        break;
+                }
+
+                for (size_t k = 0; k < vKeysCell.size(); ++k)
+                    vToDistributeKeys.push_back(vKeysCell[k]);
+            }
+        }
+
+        keypoints = DistributeOctTree(vToDistributeKeys, minBorderX, maxBorderX,
+                                      minBorderY, maxBorderY, mnFeaturesPerLevel[level], level);
+
+        const float scaledPatchSize = (float)(PATCH_SIZE * mvScaleFactor[level]);
+        for (size_t i = 0; i < keypoints.size(); ++i)
+        {
+            keypoints[i].pt.x += minBorderX;
+            keypoints[i].pt.y += minBorderY;
+            keypoints[i].octave = level;
+            keypoints[i].size = scaledPatchSize;
+            int sector = computeOrientationSectorHW(blurred, cvRound(keypoints[i].pt.x), cvRound(keypoints[i].pt.y));
+            keypoints[i].angle = (float)sector * 5.625f;
+        }
+    }
 }
 
 } //namespace ORB_SLAM

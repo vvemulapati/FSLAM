@@ -47,9 +47,14 @@ class ORBextractor
 public:
     
     enum {HARRIS_SCORE=0, FAST_SCORE=1 };
+    enum ExtractorMode {
+        OPENCV_MODE    = 0,
+        HYBRID_HW_MODE = 1,
+        RTL_EXACT_MODE = 2
+    };
 
     ORBextractor(int nfeatures, float scaleFactor, int nlevels,
-                 int iniThFAST, int minThFAST);
+                 int iniThFAST, int minThFAST, int mode = HYBRID_HW_MODE);
 
     ~ORBextractor(){}
 
@@ -82,12 +87,23 @@ public:
         return mvInvLevelSigma2;
     }
 
+    int inline GetMode(){
+        return mMode;}
+
+    void inline SetMode(int mode){
+        mMode = mode;}
+
     std::vector<cv::Mat> mvImagePyramid;
+    std::vector<cv::Mat> mvQuantizedPyramidHW;
+    std::vector<cv::Mat> mvBlurredPyramidHW;
 
 protected:
 
     void ComputePyramid(cv::Mat image);
+    void ComputePyramidHW(cv::Mat image);
     void ComputeKeyPointsOctTree(std::vector<std::vector<cv::KeyPoint> >& allKeypoints);    
+    void ComputeKeyPointsOctTreeHW(std::vector<std::vector<cv::KeyPoint> >& allKeypoints);
+    void ComputeKeyPointsRTLExact(std::vector<std::vector<cv::KeyPoint> >& allKeypoints);
     std::vector<cv::KeyPoint> DistributeOctTree(const std::vector<cv::KeyPoint>& vToDistributeKeys, const int &minX,
                                            const int &maxX, const int &minY, const int &maxY, const int &nFeatures, const int &level);
 
@@ -99,6 +115,7 @@ protected:
     int nlevels;
     int iniThFAST;
     int minThFAST;
+    int mMode;
 
     std::vector<int> mnFeaturesPerLevel;
 

@@ -36,6 +36,7 @@ module hw_top #(
     logic [11:0] feature_x, feature_y;
     logic [5:0]  feature_orientation;
     logic [1:0]  feature_level;
+    logic        orb_stall;
     logic        orb_processing;
     logic [10:0] total_features;
 
@@ -52,9 +53,9 @@ module hw_top #(
     logic         desc_fifo_underflow;
     logic [6:0]   desc_fifo_count;
 
-    // Backpressure pixel unpacking when the descriptor FIFO is filling up
+    // Backpressure pixel unpacking when descriptor FIFO fills or rBRIEF is busy
     logic fifo_backpressure;
-    assign fifo_backpressure = desc_fifo_almost_full || desc_fifo_full;
+    assign fifo_backpressure = desc_fifo_almost_full || desc_fifo_full || orb_stall;
 
     // Pixel Stream Unpacking (4 pixels per 32-bit AXI word: 6-bit per pixel)
     logic [AXI_DATA_WIDTH-1:0] axis_buf_data;
@@ -123,6 +124,7 @@ module hw_top #(
         .feature_y(feature_y),
         .feature_orientation(feature_orientation),
         .feature_level(feature_level),
+        .stall_req(orb_stall),
         .processing(orb_processing),
         .total_features(total_features)
     );
