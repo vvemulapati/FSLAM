@@ -243,7 +243,8 @@ module feature_extractor #(
         .DESCRIPTOR_BITS(DESCRIPTOR_BITS),
         .ANGLE_BITS(ANGLE_BITS),
         .COORD_BITS(COORD_BITS),
-        .PAIRS_PER_CYCLE(2)
+        .PAIRS_PER_CYCLE(2),
+        .ORI_LATENCY(5)
     ) u_brief (
         .clk(clk),
         .rst_n(rst_n),

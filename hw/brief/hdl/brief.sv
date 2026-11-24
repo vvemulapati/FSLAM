@@ -36,7 +36,8 @@ module brief #(
     parameter int DESCRIPTOR_BITS = 256,
     parameter int ANGLE_BITS      = 6,
     parameter int COORD_BITS      = 6,
-    parameter int PAIRS_PER_CYCLE = 2
+    parameter int PAIRS_PER_CYCLE = 2,
+    parameter int ORI_LATENCY     = 5
 ) (
     input  logic                                  clk,
     input  logic                                  rst_n,
@@ -45,7 +46,7 @@ module brief #(
     input  logic                                  col_valid,
     input  logic [PIXEL_WIDTH-1:0]                col_in [WINDOW_SIZE-1:0],
 
-    // Keypoint trigger (patch_latch 1 cycle ahead of start)
+    // Keypoint trigger (patch_latch ORI_LATENCY cycles ahead of start)
     input  logic                                  patch_latch,
     input  logic                                  start,
     input  logic [15:0]                           keypoint_score_in,
@@ -96,27 +97,31 @@ module brief #(
         -8'sd90,  -8'sd81,  -8'sd71,  -8'sd60,  -8'sd49,  -8'sd37,  -8'sd25,  -8'sd12
     };
 
-    // Circular column write pointer and patch right-edge pointer latch
-    logic [5:0] col_wr_ptr;
-    logic [5:0] pending_right_ptr;
-    logic       patch_pending;
+    // Circular column write pointer and patch right-edge delay pipe aligned with orientation
+    logic [5:0]             col_wr_ptr;
+    logic [ORI_LATENCY-1:0] patch_pipe_valid;
+    logic [5:0]             patch_pipe_ptr [0:ORI_LATENCY-1];
+    wire  [5:0]             pending_right_ptr = patch_pipe_ptr[ORI_LATENCY-1];
+    wire                    patch_pending     = |patch_pipe_valid;
 
     always_ff @(posedge clk) begin
         if (!rst_n) begin
-            col_wr_ptr        <= '0;
-            pending_right_ptr <= '0;
-            patch_pending     <= 1'b0;
+            col_wr_ptr       <= '0;
+            patch_pipe_valid <= '0;
+            for (int i = 0; i < ORI_LATENCY; i++) begin
+                patch_pipe_ptr[i] <= '0;
+            end
         end else begin
             if (col_valid) begin
                 col_wr_ptr <= col_wr_ptr + 6'd1;
             end
+            patch_pipe_valid[0] <= patch_latch;
             if (patch_latch) begin
-                pending_right_ptr <= col_wr_ptr;
+                patch_pipe_ptr[0] <= col_wr_ptr;
             end
-            if (patch_latch) begin
-                patch_pending <= 1'b1;
-            end else if (start) begin
-                patch_pending <= 1'b0;
+            for (int i = 1; i < ORI_LATENCY; i++) begin
+                patch_pipe_valid[i] <= patch_pipe_valid[i-1];
+                patch_pipe_ptr[i]   <= patch_pipe_ptr[i-1];
             end
         end
     end
