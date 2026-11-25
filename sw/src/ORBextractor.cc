@@ -1320,7 +1320,9 @@ void ORBextractor::ComputeKeyPointsOld(std::vector<std::vector<KeyPoint> > &allK
 static void computeDescriptors(const Mat& image, vector<KeyPoint>& keypoints, Mat& descriptors,
                                const vector<Point>& pattern)
 {
-    descriptors = Mat::zeros((int)keypoints.size(), 32, CV_8UC1);
+    if (descriptors.rows != (int)keypoints.size() || descriptors.cols != 32 || descriptors.type() != CV_8UC1)
+        descriptors.create((int)keypoints.size(), 32, CV_8UC1);
+    descriptors.setTo(Scalar::all(0));
 
     for (size_t i = 0; i < keypoints.size(); i++)
         computeOrbDescriptor(keypoints[i], image, &pattern[0], descriptors.ptr((int)i));
@@ -1427,10 +1429,10 @@ void ORBextractor::operator()( InputArray _image, InputArray _mask, vector<KeyPo
 
         if (level != 0)
         {
-            float scale = mvScaleFactor[level];
+            const float hwScale = std::pow(1.2f, (float)level);
             for (vector<KeyPoint>::iterator keypoint = keypoints.begin(),
                  keypointEnd = keypoints.end(); keypoint != keypointEnd; ++keypoint)
-                keypoint->pt *= scale;
+                keypoint->pt *= hwScale;
         }
         _keypoints.insert(_keypoints.end(), keypoints.begin(), keypoints.end());
     }
@@ -1478,6 +1480,11 @@ void ORBextractor::ComputePyramidHW(cv::Mat image)
         gaussianBlur7x7_HW(mvQuantizedPyramidHW[level], mvBlurredPyramidHW[level]);
 
         Size sz(mvQuantizedPyramidHW[level].cols, mvQuantizedPyramidHW[level].rows);
+        if (sz.width < 1 || sz.height < 1)
+        {
+            mvImagePyramid[level] = Mat();
+            continue;
+        }
         Size wholeSize(sz.width + EDGE_THRESHOLD * 2, sz.height + EDGE_THRESHOLD * 2);
         Mat temp(wholeSize, image.type());
         mvImagePyramid[level] = temp(Rect(EDGE_THRESHOLD, EDGE_THRESHOLD, sz.width, sz.height));
@@ -1490,21 +1497,31 @@ void ORBextractor::ComputePyramidHW(cv::Mat image)
             for (int x = 0; x < sz.width; ++x)
                 srow[x] = (uchar)(qrow[x] << 2);
         }
+        const int borderMode = (sz.width < 2 || sz.height < 2) ? BORDER_REPLICATE : BORDER_REFLECT_101;
         copyMakeBorder(scaled8, temp, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD,
-                       BORDER_REFLECT_101);
+                       borderMode);
     }
 }
 
 void ORBextractor::ComputeKeyPointsRTLExact(vector<vector<KeyPoint> >& allKeypoints)
 {
     allKeypoints.resize(nlevels);
-    const int thresh = (iniThFAST <= 6) ? std::max(1, iniThFAST) : std::max(1, iniThFAST >> 2);
-    int fifoDepth = 0;
+    for (int level = 0; level < nlevels; ++level)
+        allKeypoints[level].clear();
+
+    const int thresh = std::max(1, iniThFAST >> 2);
+    int fifoDepth = 512;
     const char* envFifo = std::getenv("FSLAM_FIFO_DEPTH");
     if (envFifo != NULL)
         fifoDepth = std::atoi(envFifo);
 
-    for (int level = 0; level < nlevels; ++level)
+    int maxHwLevels = 4;
+    const char* envLevels = std::getenv("FSLAM_HW_LEVELS");
+    if (envLevels != NULL)
+        maxHwLevels = std::max(1, std::atoi(envLevels));
+    const int activeLevels = std::min(nlevels, maxHwLevels);
+
+    for (int level = 0; level < activeLevels; ++level)
     {
         const Mat& img = mvQuantizedPyramidHW[level];
         const Mat& blurred = mvBlurredPyramidHW[level];
@@ -1524,9 +1541,9 @@ void ORBextractor::ComputeKeyPointsRTLExact(vector<vector<KeyPoint> >& allKeypoi
                 srow[x] = fast9ScoreHW(img, x, y, thresh);
         }
 
-        const float scaledPatchSize = (float)(PATCH_SIZE * mvScaleFactor[level]);
+        const float scaledPatchSize = (float)(PATCH_SIZE * std::pow(1.2f, (float)level));
         std::deque<int> kpFifo;
-        const int fifoSpan = 17 * w + 17;
+        const int fifoSpan = 17 * w + 16;
         for (int y = 18; y < h - 21; ++y)
         {
             const int* r_m1 = scores.ptr<int>(y - 1);
@@ -1575,8 +1592,8 @@ void ORBextractor::ComputeKeyPointsOctTreeHW(vector<vector<KeyPoint> >& allKeypo
 {
     allKeypoints.resize(nlevels);
     const float W = 30.0f;
-    const int iniTh6 = (iniThFAST <= 6) ? std::max(1, iniThFAST) : std::max(1, iniThFAST >> 2);
-    const int minTh6 = (minThFAST <= 6) ? std::max(1, minThFAST) : std::max(1, minThFAST >> 2);
+    const int iniTh6 = std::max(1, iniThFAST >> 2);
+    const int minTh6 = std::max(1, minThFAST >> 2);
 
     for (int level = 0; level < nlevels; ++level)
     {
@@ -1675,7 +1692,7 @@ void ORBextractor::ComputeKeyPointsOctTreeHW(vector<vector<KeyPoint> >& allKeypo
         keypoints = DistributeOctTree(vToDistributeKeys, minBorderX, maxBorderX,
                                       minBorderY, maxBorderY, mnFeaturesPerLevel[level], level);
 
-        const float scaledPatchSize = (float)(PATCH_SIZE * mvScaleFactor[level]);
+        const float scaledPatchSize = (float)(PATCH_SIZE * std::pow(1.2f, (float)level));
         for (size_t i = 0; i < keypoints.size(); ++i)
         {
             keypoints[i].pt.x += minBorderX;

@@ -1,5 +1,5 @@
-// Verilator testbench for hw_top: streams input_pixels.hex and writes the
-// output features to rtl_features_verilator.txt.
+// Verilator testbench for hw_top: streams input_pixels.hex and writes output
+// feature packets to rtl_features_verilator.txt.
 
 #include <iostream>
 #include <fstream>
@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
 
     std::ifstream infile(hex_path);
     if (!infile.is_open()) {
-        std::cerr << "[ERROR] Failed to open " << hex_path << std::endl;
+        std::cerr << "ERROR: Failed to open " << hex_path << std::endl;
         return 1;
     }
 
@@ -33,12 +33,8 @@ int main(int argc, char** argv) {
     }
     infile.close();
 
-    std::cout << "[TB] Loaded " << pixel_words.size() << " 32-bit pixel words ("
-              << pixel_words.size() * 4 << " pixels)" << std::endl;
-
     std::ofstream outfile("rtl_features_verilator.txt");
 
-    // Initialize signals
     top->aclk = 0;
     top->aresetn = 0;
     top->s_axis_tdata = 0;
@@ -56,19 +52,16 @@ int main(int argc, char** argv) {
         main_time += 5;
     };
 
-    // Reset sequence
     for (int i = 0; i < 4; i++) tick();
     top->aresetn = 1;
     for (int i = 0; i < 4; i++) tick();
 
-    // Streaming pixels & packet capture
-    std::cout << "[TB] Streaming pixels and capturing features..." << std::endl;
     size_t word_send_idx = 0;
     int packet_word_idx = 0;
     uint32_t captured_packet[10] = {0};
     int extracted_features = 0;
     uint64_t cycle_count = 0;
-    const uint64_t max_cycles = 1000000;
+    const uint64_t max_cycles = 5000000;
 
     while ((word_send_idx < pixel_words.size() || !top->__SYM__interrupt) &&
            cycle_count < max_cycles) {
@@ -97,7 +90,6 @@ int main(int argc, char** argv) {
             word_send_idx++;
         }
 
-        // Capture AXI-Stream master feature packets
         if (top->m_axis_tvalid && top->m_axis_tready) {
             captured_packet[packet_word_idx] = top->m_axis_tdata;
             if (packet_word_idx == 9 || top->m_axis_tlast) {
@@ -129,7 +121,12 @@ int main(int argc, char** argv) {
     }
 
     outfile.close();
-    std::cout << "[TB] Done: " << extracted_features << " features" << std::endl;
+    if (cycle_count >= max_cycles) {
+        std::cerr << "ERROR: Simulation timed out at " << cycle_count << " cycles" << std::endl;
+        delete top;
+        return 1;
+    }
+    std::cout << "Extracted " << extracted_features << " features" << std::endl;
 
     delete top;
     return 0;

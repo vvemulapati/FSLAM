@@ -63,7 +63,6 @@ module window_buffer #(
         end
     end
 
-    // Instantiate line buffers in series
     genvar i;
     generate
         for (i = 0; i < N_LB; i++) begin : gen_linebufs
@@ -95,7 +94,7 @@ module window_buffer #(
         end
     endgenerate
 
-    // Instantiate 1D shift register for each row (row 0 is newest, row N_LB is oldest)
+    // Row 0 holds the newest row; row N_LB holds the oldest
     generate
         for (i = 0; i < WINDOW_SIZE; i++) begin : gen_shift_registers
             if (i == 0) begin : gen_first_sr

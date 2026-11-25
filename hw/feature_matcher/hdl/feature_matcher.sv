@@ -14,19 +14,16 @@ module feature_matcher #(
     input  logic                          rst_n,
     input  logic                          enable,
 
-    // Store new map feature into memory
     input  logic                          store_valid,
     input  logic [DESCRIPTOR_BITS-1:0]    store_descriptor,
     input  logic [SCORE_WIDTH-1:0]        store_score,
     input  logic [COORD_WIDTH-1:0]        store_x,
     input  logic [COORD_WIDTH-1:0]        store_y,
 
-    // Query feature
     input  logic                          query_valid,
     input  logic [DESCRIPTOR_BITS-1:0]    query_descriptor,
     output logic                          query_ready,
 
-    // Match output
     output logic                          match_valid,
     output logic [DESCRIPTOR_BITS-1:0]    matched_descriptor,
     output logic [SCORE_WIDTH-1:0]        matched_score,
@@ -45,7 +42,6 @@ module feature_matcher #(
         logic [COORD_WIDTH-1:0]     y;
     } feature_entry_t;
 
-    // Feature storage
     (* ram_style = "block" *)
     feature_entry_t feature_mem [0:MAX_FEATURES-1];
     feature_entry_t mem_rd_data;
@@ -72,7 +68,6 @@ module feature_matcher #(
 
     assign num_features = feat_count;
 
-    // Population count
     function automatic logic [4:0] popcount16(input logic [15:0] val);
         logic [4:0] cnt;
         cnt = '0;
@@ -96,7 +91,7 @@ module feature_matcher #(
     logic        best_valid;
     logic [DESCRIPTOR_BITS-1:0] query_desc_reg;
 
-    // Matching pipeline
+    // 3-cycle BRAM read -> 16x popcount16 -> sum reduction
     logic        s1_valid, s2_valid;
     logic [8:0]  s1_idx,   s2_idx;
     logic [4:0]  s2_part_cnt [0:15];

@@ -54,7 +54,7 @@ public:
     };
 
     ORBextractor(int nfeatures, float scaleFactor, int nlevels,
-                 int iniThFAST, int minThFAST, int mode = HYBRID_HW_MODE);
+                 int iniThFAST, int minThFAST, int mode = OPENCV_MODE);
 
     ~ORBextractor(){}
 

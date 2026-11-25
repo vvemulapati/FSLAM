@@ -7,10 +7,8 @@ and a Hamming-distance matcher.
 """
 
 import math
-import struct
-from typing import List, Tuple, Dict, Any, Optional
-
-# Constants and lookup tables
+import os
+from typing import List, Optional, Tuple
 
 # 7x7 Binomial 2D Gaussian Kernel (outer product of [1, 6, 15, 20, 15, 6, 1])
 BINOMIAL_KERNEL_7X7 = [
@@ -339,9 +337,6 @@ OPENCV_ORB_PATTERN_256 = [
 DEFAULT_BRIEF_PATTERN = OPENCV_ORB_PATTERN_256
 
 
-
-# Data structures
-
 class Keypoint:
     def __init__(self, x: int, y: int, score: int, level: int, angle_sector: int = 0):
         self.x = x
@@ -355,17 +350,16 @@ class Keypoint:
         return f"Keypoint(x={self.x}, y={self.y}, score={self.score}, level={self.level}, angle={self.angle_sector})"
 
 
-# Pipeline
-
 class ORBHardwareReferenceModel:
     def __init__(
         self,
         pixel_depth: int = 6,
-        fast_threshold: int = 20,
+        fast_threshold: int = 5,
         pyramid_levels: int = 4,
         brief_pattern: Optional[List[Tuple[int, int, int, int]]] = None,
         img_width: int = 640,
-        img_height: int = 480
+        img_height: int = 480,
+        fifo_depth: Optional[int] = 512
     ):
         self.pixel_depth = pixel_depth
         self.fast_threshold = fast_threshold
@@ -373,6 +367,7 @@ class ORBHardwareReferenceModel:
         self.brief_pattern = brief_pattern if brief_pattern is not None else DEFAULT_BRIEF_PATTERN
         self.img_width = img_width
         self.img_height = img_height
+        self.fifo_depth = fifo_depth
 
         # Pyramid level dimensions (5/6 scale downsampling)
         self.level_dims = [(img_width, img_height)]
@@ -479,7 +474,6 @@ class ORBHardwareReferenceModel:
                 brighter = [(p > center + thresh) for p in circle_pixels]
                 darker = [(center > p + thresh) for p in circle_pixels]
 
-                # Check 9 contiguous
                 b_2x = brighter + brighter
                 d_2x = darker + darker
 
@@ -500,13 +494,14 @@ class ORBHardwareReferenceModel:
         (same tie-break as nms.sv).
         """
         keypoints = []
+        kp_fifo: List[int] = []
+        fifo_span = 17 * width + 16
         for y in range(18, height - 21):
             for x in range(18, width - 21):
                 center = scores[y][x]
                 if center <= 0:
                     continue
 
-                # Check neighbors
                 if (center <= scores[y - 1][x - 1] or
                     center <= scores[y - 1][x] or
                     center <= scores[y - 1][x + 1] or
@@ -518,6 +513,14 @@ class ORBHardwareReferenceModel:
                     center < scores[y + 1][x] or
                     center < scores[y + 1][x + 1]):
                     continue
+
+                if self.fifo_depth is not None and self.fifo_depth > 0:
+                    pos = y * width + x
+                    while kp_fifo and kp_fifo[0] <= pos - fifo_span:
+                        kp_fifo.pop(0)
+                    if len(kp_fifo) >= self.fifo_depth:
+                        continue
+                    kp_fifo.append(pos)
 
                 keypoints.append(Keypoint(x=x, y=y, score=center, level=level))
 
@@ -551,11 +554,7 @@ class ORBHardwareReferenceModel:
         abs_m01 = abs(m01)
         abs_m10 = abs(m10)
 
-        # Quadrant determination:
-        # Quad 0: [0, 90)   -> m10 >= 0, m01 >= 0
-        # Quad 1: [90, 180)  -> m10 < 0,  m01 >= 0
-        # Quad 2: [180, 270) -> m10 < 0,  m01 < 0
-        # Quad 3: [270, 360) -> m10 >= 0, m01 < 0
+        # Quadrants 0..3 cover [0, 90), [90, 180), [180, 270), [270, 360)
         if m10 >= 0 and m01 >= 0:
             quadrant = 0
         elif m10 < 0 and m01 >= 0:
@@ -622,16 +621,10 @@ class ORBHardwareReferenceModel:
             lvl_img = pyramid[lvl]
             w, h = self.level_dims[lvl]
 
-            # Gaussian blur on level image
             blurred = self.gaussian_blur(lvl_img, w, h)
-
-            # FAST corner detection
             scores = self.detect_fast_corners(lvl_img, w, h, lvl)
-
-            # NMS
             kpts = self.non_maximum_suppression(scores, w, h, lvl)
 
-            # Orientation & Descriptor calculation
             for kpt in kpts:
                 kpt.angle_sector = self.compute_orientation(blurred, w, h, kpt)
                 kpt.descriptor = self.generate_brief_descriptor(blurred, w, h, kpt)
@@ -639,8 +632,6 @@ class ORBHardwareReferenceModel:
 
         return all_keypoints
 
-
-# Matching
 
 def popcount256(val: int) -> int:
     """Computes population count (Hamming weight) of a 256-bit integer."""
@@ -670,8 +661,6 @@ def match_features(
     return matches
 
 
-# Test image generators and PGM loader
-
 def generate_synthetic_image(width: int = 640, height: int = 480) -> List[List[int]]:
     """Generates a synthetic test image with high-contrast geometric corners."""
     img = [[32] * width for _ in range(height)]
@@ -694,10 +683,9 @@ def generate_synthetic_image(width: int = 640, height: int = 480) -> List[List[i
 
 def generate_rotated_shapes_image(width: int = 640, height: int = 480) -> List[List[int]]:
     """Generates a test image with radial spokes and rotated polygons."""
-    import math
     img = [[40] * width for _ in range(height)]
 
-    # 1. Central Siemens star (16 radial spokes) + concentric rings at (320, 240)
+    # Central Siemens star and concentric rings
     cx, cy = width // 2, height // 2
     for y in range(cy - 150, cy + 150):
         for x in range(cx - 150, cx + 150):
@@ -711,7 +699,7 @@ def generate_rotated_shapes_image(width: int = 640, height: int = 480) -> List[L
                 val = 230 if ((sector + ring) & 1) == 0 else 25
                 img[y][x] = val
 
-    # 2. Rotated diamonds and triangles in the four corners
+    # Rotated polygons in the four corners
     centers = [(110, 100, 0.4), (530, 100, 0.9), (110, 380, 1.3), (530, 380, 2.1)]
     for ox, oy, ang in centers:
         ca, sa = math.cos(ang), math.sin(ang)
@@ -852,7 +840,6 @@ def get_test_image_suite(
     test_images_dir: str = None
 ) -> List[Tuple[str, str, List[List[int]]]]:
     """Returns (name, description, image_2d) for the test images."""
-    import os
     suite: List[Tuple[str, str, List[List[int]]]] = [
         ("synthetic_default", "Checkerboard squares + diagonal bars", generate_synthetic_image(width, height)),
         ("synthetic_rotated_shapes", "Siemens star + concentric rings + rotated polygons", generate_rotated_shapes_image(width, height)),
@@ -864,7 +851,7 @@ def get_test_image_suite(
         test_images_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_images")
 
     real_specs = [
-        ("real_thesis_facade", "building facade photo", "real_thesis_facade.pgm"),
+        ("real_thesis_facade", "Building facade photo", "real_thesis_facade.pgm"),
         ("real_landscape", "Natural mountain & sky landscape photo", "real_landscape.pgm"),
         ("real_nebula_m16", "Eagle Nebula M16 astronomical photo", "real_nebula_m16.pgm"),
         ("real_objects_collage", "4x3 collage of 12 real-world object photos", "real_objects_collage.pgm"),

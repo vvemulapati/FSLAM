@@ -8,16 +8,14 @@ module linebuffer_ram #(
     parameter int DATA_WIDTH = 6,
     parameter int DEPTH      = 640,
     parameter int ADDR_WIDTH = (DEPTH > 1) ? $clog2(DEPTH) : 1,
-    parameter     RAM_STYLE  = "block" // "block", "distributed", or "ultra"
+    parameter     RAM_STYLE  = "block"
 ) (
     input  logic                  clk,
 
-    // Write port
     input  logic                  wr_en,
     input  logic [ADDR_WIDTH-1:0] wr_addr,
     input  logic [DATA_WIDTH-1:0] wr_data,
 
-    // Read port
     input  logic                  rd_en,
     input  logic [ADDR_WIDTH-1:0] rd_addr,
     output logic [DATA_WIDTH-1:0] rd_data
@@ -44,7 +42,7 @@ endmodule
 module linebuffer #(
     parameter int DATA_WIDTH = 6,
     parameter int LINE_WIDTH = 640,
-    parameter     RAM_STYLE  = "block" // "block", "distributed", or "ultra"
+    parameter     RAM_STYLE  = "block"
 ) (
     input  logic                  clk,
     input  logic                  rst_n,
@@ -58,7 +56,6 @@ module linebuffer #(
 
     localparam int ADDR_WIDTH = (LINE_WIDTH > 1) ? $clog2(LINE_WIDTH) : 1;
 
-    // Pointer and control registers
     logic [ADDR_WIDTH-1:0] wr_ptr;
     logic [ADDR_WIDTH-1:0] rd_ptr;
     logic [ADDR_WIDTH:0]   fill_count;

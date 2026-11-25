@@ -25,7 +25,6 @@ module fast #(
     localparam int N_CONTIG = 9;
     localparam int N_CIRCLE = 16;
 
-    // 7x7 sliding window buffer
     logic [PIXEL_WIDTH-1:0] win [6:0][6:0];
     logic                   win_valid;
 
@@ -69,7 +68,7 @@ module fast #(
         end
     end
 
-    // Bresenham circle extraction (Radius 3 around center [3][3])
+    // Radius-3 Bresenham circle around win[3][3]
     logic [PIXEL_WIDTH-1:0] center_pixel;
     logic [PIXEL_WIDTH-1:0] circle [0:15];
 
@@ -94,7 +93,6 @@ module fast #(
         circle[15] = win[0][2]; // (-1, -3)
     end
 
-    // Brighter / Darker comparison
     logic [15:0]          brighter, darker;
     logic [31:0]          brighter_2x, darker_2x;
     logic [PIXEL_WIDTH:0] diff [0:15];
@@ -115,7 +113,6 @@ module fast #(
     assign brighter_2x = {brighter, brighter};
     assign darker_2x   = {darker, darker};
 
-    // Contiguous 9-pixel test
     logic is_corner;
     always_comb begin
         is_corner = 1'b0;
@@ -134,7 +131,6 @@ module fast #(
     assign center_valid = pixel_valid_d1 && ((win_y > 12'd3) || (win_y == 12'd3 && win_x >= 12'd3));
     assign in_interior  = win_valid && (win_x >= 12'd6) && (win_y >= 12'd6);
 
-    // Pipeline stage 1
     logic                   s1_valid;
     logic                   s1_use_score;
     logic [11:0]            s1_x, s1_y;
@@ -162,7 +158,6 @@ module fast #(
         end
     end
 
-    // Score sum
     logic [15:0] score_accum_s2;
     always_comb begin
         score_accum_s2 = '0;
@@ -171,7 +166,6 @@ module fast #(
         end
     end
 
-    // Register outputs
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             corner_valid <= 1'b0;

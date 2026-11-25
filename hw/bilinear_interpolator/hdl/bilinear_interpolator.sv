@@ -11,13 +11,12 @@ module bilinear_interpolator #(
     input  logic                   rst_n,
     input  logic                   valid_in,
 
-    // 2x2 neighborhood: [row][col] -> [y][x]
     input  logic [PIXEL_WIDTH-1:0] pixel_00, // (y0, x0) top-left
     input  logic [PIXEL_WIDTH-1:0] pixel_01, // (y0, x1) top-right
     input  logic [PIXEL_WIDTH-1:0] pixel_10, // (y1, x0) bottom-left
     input  logic [PIXEL_WIDTH-1:0] pixel_11, // (y1, x1) bottom-right
 
-    // Fractional coordinates (0 to 4, representing modulo 6 position)
+    // Modulo-6 subpixel offset (0..4)
     input  logic [2:0]             frac_x,
     input  logic [2:0]             frac_y,
 
@@ -27,7 +26,7 @@ module bilinear_interpolator #(
 
     localparam int SCALED_W = PIXEL_WIDTH + 17;
 
-    // Weight table for a, b in 0..5
+    // Products a*b for a, b in 0..5
     localparam logic [4:0] WEIGHT_LUT [0:7][0:7] = '{
         '{5'd0, 5'd0,  5'd0,  5'd0,  5'd0,  5'd0,  5'd0, 5'd0},
         '{5'd0, 5'd1,  5'd2,  5'd3,  5'd4,  5'd5,  5'd0, 5'd0},
@@ -49,7 +48,6 @@ module bilinear_interpolator #(
         inv_x = (frac_x <= 3'd5) ? (3'd5 - frac_x) : 3'd0;
         inv_y = (frac_y <= 3'd5) ? (3'd5 - frac_y) : 3'd0;
 
-        // Weights: sum of w00+w01+w10+w11 = 25
         w00 = {1'b0, WEIGHT_LUT[inv_y][inv_x]};
         w01 = {1'b0, WEIGHT_LUT[inv_y][frac_x]};
         w10 = {1'b0, WEIGHT_LUT[frac_y][inv_x]};

@@ -115,7 +115,7 @@ Tracking::Tracking(System *pSys, ORBVocabulary* pVoc, FrameDrawer *pFrameDrawer,
     int nLevels = fSettings["ORBextractor.nLevels"];
     int fIniThFAST = fSettings["ORBextractor.iniThFAST"];
     int fMinThFAST = fSettings["ORBextractor.minThFAST"];
-    int fMode = ORBextractor::HYBRID_HW_MODE;
+    int fMode = ORBextractor::OPENCV_MODE;
     if(!fSettings["ORBextractor.mode"].empty())
         fMode = (int)fSettings["ORBextractor.mode"];
 

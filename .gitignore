@@ -6,5 +6,4 @@ obj_dir_verilator
 csrc
 *.log
 *.fsdb*
-
-
+.Xil

@@ -17,7 +17,6 @@ module orientation #(
     input  logic                   clk,
     input  logic                   rst_n,
 
-    // Keypoint trigger from NMS
     input  logic                   keypoint_valid,
     input  logic [15:0]            keypoint_score,
     input  logic [11:0]            keypoint_x,
@@ -36,8 +35,8 @@ module orientation #(
     output logic                   busy
 );
 
-    // Stage 1: Column sum S(Cin) and column moment m01(Cin).
-    // col_in[0] is bottom-right (dy = +18, dx = +18), col_in[36] is top-right (dy = -18, dx = +18).
+    // Incoming column sum S(Cin) and vertical moment m01(Cin) (s1).
+    // col_in[0] is dy = +18 (bottom), col_in[36] is dy = -18 (top).
     logic signed [15:0] s_cin_comb,   s_cin_q;
     logic signed [20:0] m01_cin_comb, m01_cin_q;
     logic signed [27:0] s_cin_x18_q;
@@ -83,7 +82,7 @@ module orientation #(
         end
     end
 
-    // Stage 2: Sliding window moment accumulators and keypoint moment snapshot
+    // Running 37-column moment accumulators and keypoint snapshot (s2)
     logic signed [15:0] s_cout_pipe   [0:WINDOW_SIZE-1];
     logic signed [20:0] m01_cout_pipe [0:WINDOW_SIZE-1];
 
@@ -147,7 +146,7 @@ module orientation #(
         end
     end
 
-    // Stage 3: Quadrant classification and moment magnitudes
+    // Quadrant signs and |m01|, |m10| magnitudes (s3)
     logic        s3_kp_valid;
     logic [1:0]  s3_quadrant;
     logic [27:0] s3_abs_m01, s3_abs_m10;
@@ -182,7 +181,7 @@ module orientation #(
         end
     end
 
-    // Stage 4: 15 tangent threshold products (tan(theta) * 256)
+    // Parallel |m10| * round(256 * tan(theta)) products (s4)
     localparam logic [12:0] TAN_THRESH [0:14] = '{
         13'd25,   //  5.625 deg
         13'd51,   // 11.250 deg
@@ -234,12 +233,12 @@ module orientation #(
         end
     end
 
-    // Stage 5: Threshold comparison, priority encode, and registered output
+    // Priority-encode sector within quadrant and register output
     logic [3:0] sector_in_quad;
     logic [3:0] quad_sector;
 
     always_comb begin
-        sector_in_quad = 4'd15; // default to last sector
+        sector_in_quad = 4'd15;
         for (int s = 0; s < 15; s++) begin
             if (s4_prod[s] >= s4_rhs) begin
                 sector_in_quad = 4'(s);

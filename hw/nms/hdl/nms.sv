@@ -23,7 +23,6 @@ module nms #(
     output logic [COORD_WIDTH-1:0] keypoint_y
 );
 
-    // 3x3 sliding window on corner score stream
     logic [SCORE_WIDTH-1:0] win [2:0][2:0];
     logic                   win_valid;
 
@@ -80,7 +79,6 @@ module nms #(
         end
     end
 
-    // Output stage
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             keypoint_valid <= 1'b0;

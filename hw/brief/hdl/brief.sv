@@ -189,7 +189,7 @@ module brief #(
         end
     end
 
-    // Active keypoint context and Stage 0 (pattern fetch)
+    // Keypoint context and pattern pair fetch (s0)
     logic [5:0]               active_right_ptr;
     logic [ANGLE_BITS-1:0]    active_orientation;
     logic [15:0]              active_score;
@@ -257,7 +257,7 @@ module brief #(
         end
     end
 
-    // Stage 1: Coordinate rotation and circular RAM column address calculation
+    // Rotate test pair coordinates and compute circular RAM column addresses (s1)
     logic       s1_last;
     logic [5:0] s1_rd_col [0:NUM_READ_PORTS-1];
     logic [5:0] s1_wy1    [0:PAIRS_PER_CYCLE-1];
@@ -325,7 +325,7 @@ module brief #(
         end
     end
 
-    // Stage 2: Align row indices with registered LUTRAM read outputs
+    // Delay row indices and bounds flags to match 1-cycle LUTRAM read (s2)
     logic       s2_last;
     logic [5:0] s2_wy1 [0:PAIRS_PER_CYCLE-1];
     logic [5:0] s2_wy2 [0:PAIRS_PER_CYCLE-1];
@@ -356,7 +356,7 @@ module brief #(
         end
     end
 
-    // Stage 3: Row mux, pixel pair comparison, and shift-register assembly
+    // Select target rows, compare pixel intensities, and shift into descriptor
     logic [PAIRS_PER_CYCLE-1:0] pair_bits;
     logic [DESCRIPTOR_BITS-1:0] desc_shift;
     logic [DESCRIPTOR_BITS-1:0] desc_next;

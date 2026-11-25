@@ -10,19 +10,16 @@ from typing import List, Tuple, Dict, Optional
 
 from orb_hardware_reference_model import (
     BINOMIAL_KERNEL_7X7,
-    KERNEL_SUM,
     BRESENHAM_CIRCLE_OFFSETS,
     TAN_THRESH_15,
     OPENCV_ORB_PATTERN_256,
     ORBHardwareReferenceModel,
     Keypoint,
     popcount256,
-    match_features,
     generate_synthetic_image,
 )
 
-# Lookup tables (64 sectors, Q1.7 signed fixed-point)
-
+# 64-sector Q1.7 signed fixed-point sin/cos tables
 GOLDEN_COS_LUT_64 = [
     int(round(127.0 * math.cos(2.0 * math.pi * i / 64.0))) for i in range(64)
 ]
@@ -43,7 +40,7 @@ def cv_round(val: float) -> int:
 
 
 def build_opencv_umax(half_patch_size: int = HALF_PATCH_SIZE) -> List[int]:
-    """Matches umax circular patch precomputation in ORBextractor.cc:454-471."""
+    """Precomputes circular patch row bounds (umax in ORBextractor.cc)."""
     umax = [0] * (half_patch_size + 1)
     vmax = math.floor(half_patch_size * math.sqrt(2.0) / 2.0 + 1)
     vmin = math.ceil(half_patch_size * math.sqrt(2.0) / 2.0)
@@ -86,8 +83,6 @@ def reflect_101(idx: int, length: int) -> int:
     return idx
 
 
-# Quadtree node and DistributeOctTree (ORBextractor.cc)
-
 class ExtractorNode:
     def __init__(
         self,
@@ -114,7 +109,7 @@ class ExtractorNode:
         self.no_more = no_more
 
     def divide_node(self) -> Tuple["ExtractorNode", "ExtractorNode", "ExtractorNode", "ExtractorNode"]:
-        """Matches ExtractorNode::DivideNode in ORBextractor.cc:486-541."""
+        """Port of ExtractorNode::DivideNode."""
         half_x = math.ceil(float(self.ur_x - self.ul_x) / 2.0)
         half_y = math.ceil(float(self.br_y - self.ul_y) / 2.0)
 
@@ -178,7 +173,7 @@ def distribute_oct_tree(
     max_y: int,
     n_features: int,
 ) -> List[Keypoint]:
-    """Exact port of ORBextractor::DistributeOctTree (ORBextractor.cc:543-767)."""
+    """Port of ORBextractor::DistributeOctTree."""
     if not to_distribute_keys or n_features <= 0:
         return []
 
@@ -276,8 +271,6 @@ def distribute_oct_tree(
     return result_keys
 
 
-# OpenCV ORB reference model (sw/src/ORBextractor.cc)
-
 class OpenCVORBExtractorModel:
     """Pure-Python model of ORB_SLAM2::ORBextractor (sw/src/ORBextractor.cc)."""
 
@@ -301,7 +294,7 @@ class OpenCVORBExtractorModel:
         self.discretize_angle_128 = discretize_angle_128
         self.fast_score_mode = fast_score_mode
 
-        # Scale factors and feature distribution per level (ORBextractor.cc:415-446)
+        # Per-level scale factors and target feature counts
         self.scale_factors = [1.0] * nlevels
         for i in range(1, nlevels):
             self.scale_factors[i] = self.scale_factors[i - 1] * scale_factor
@@ -357,7 +350,7 @@ class OpenCVORBExtractorModel:
         return dst
 
     def compute_pyramid(self, image_8bit: List[List[int]]) -> List[List[List[int]]]:
-        """Matches ORBextractor::ComputePyramid (ORBextractor.cc:1111-1136)."""
+        """Port of ORBextractor::ComputePyramid."""
         h0 = len(image_8bit)
         w0 = len(image_8bit[0])
         pyramid = [image_8bit]
@@ -442,7 +435,7 @@ class OpenCVORBExtractorModel:
     def compute_keypoints_octtree(
         self, img: List[List[int]], level: int
     ) -> List[Keypoint]:
-        """Matches ORBextractor::ComputeKeyPointsOctTree (ORBextractor.cc:769-858)."""
+        """Port of ORBextractor::ComputeKeyPointsOctTree."""
         h = len(img)
         w = len(img[0])
         min_bx = EDGE_THRESHOLD - 3
@@ -480,7 +473,7 @@ class OpenCVORBExtractorModel:
                     cell_keys = self._fast_in_cell(img, ini_x, max_x, ini_y, max_y, self.min_th_fast, level)
 
                 for kp in cell_keys:
-                    # Relative to (min_bx, min_by) as in ORBextractor.cc:826-828
+                    # Store coordinates relative to (min_bx, min_by) for octree splitting
                     kp.x = (kp.x - ini_x) + j * w_cell
                     kp.y = (kp.y - ini_y) + i * h_cell
                     to_distribute.append(kp)
@@ -535,7 +528,7 @@ class OpenCVORBExtractorModel:
         return cell_kpts
 
     def compute_ic_angle(self, img: List[List[int]], x: int, y: int) -> float:
-        """Matches IC_Angle & computeOrientation (ORBextractor.cc:77-104, 473-484)."""
+        """Port of IC_Angle and computeOrientation."""
         m_10 = 0
         m_01 = 0
 
@@ -586,7 +579,7 @@ class OpenCVORBExtractorModel:
     def compute_orb_descriptor(
         self, blurred_img: List[List[int]], x: int, y: int, angle_deg: float
     ) -> int:
-        """Matches computeOrbDescriptor (ORBextractor.cc:108-145)."""
+        """Port of computeOrbDescriptor."""
         rad = angle_deg * (math.pi / 180.0)
         a = math.cos(rad)
         b = math.sin(rad)
@@ -626,10 +619,8 @@ class OpenCVORBExtractorModel:
         return all_kpts
 
 
-# Hardware ORB model
-
 class ORBGoldenHardwareModel:
-    """Bit-accurate hardware ORB model for the FSLAM accelerator."""
+    """Parameterized hardware ORB model for comparing 6-bit and 8-bit stages against OpenCV."""
 
     def __init__(
         self,
@@ -637,10 +628,10 @@ class ORBGoldenHardwareModel:
         pyramid_levels: int = 4,
         img_width: int = 640,
         img_height: int = 480,
-        fast_on_8bit: bool = True,          # Thesis Sec 5.2: 8-bit FAST, 6-bit post-FAST
-        circular_orientation: bool = False, # False = 37x37 square (RTL), True = 31x31 circle
-        brief_less_than: bool = True,       # True = (val1 < val2) matching OpenCV C++
-        round_rotation: bool = False,       # False = arithmetic >> 7 (RTL), True = rounded >> 7
+        fast_on_8bit: bool = False,
+        circular_orientation: bool = False,
+        brief_less_than: bool = True,
+        round_rotation: bool = False,
     ):
         self.fast_threshold = fast_threshold
         self.pyramid_levels = pyramid_levels
@@ -668,22 +659,18 @@ class ORBGoldenHardwareModel:
         dst_w = (src_w * 5) // 6
         dst_h = (src_h * 5) // 6
         dst_img = [[0] * dst_w for _ in range(dst_h)]
-        w_lut = [0, 2, 3, 5, 6, 8]
-
         for dy in range(dst_h):
-            sy_num = dy * 6
-            sy = sy_num // 5
-            rem_y = sy_num % 5
-            wy1 = w_lut[rem_y]
-            wy0 = 8 - wy1
+            sy = (dy * 6) // 5
+            fy = (dy * 6) % 5
+            wy0 = 5 - fy
+            wy1 = fy
             sy1 = min(sy + 1, src_h - 1)
 
             for dx in range(dst_w):
-                sx_num = dx * 6
-                sx = sx_num // 5
-                rem_x = sx_num % 5
-                wx1 = w_lut[rem_x]
-                wx0 = 8 - wx1
+                sx = (dx * 6) // 5
+                fx = (dx * 6) % 5
+                wx0 = 5 - fx
+                wx1 = fx
                 sx1 = min(sx + 1, src_w - 1)
 
                 p00 = src_img[sy][sx]
@@ -691,13 +678,13 @@ class ORBGoldenHardwareModel:
                 p10 = src_img[sy1][sx]
                 p11 = src_img[sy1][sx1]
 
-                interp = (
+                weighted_sum = (
                     (wx0 * wy0 * p00)
                     + (wx1 * wy0 * p01)
                     + (wx0 * wy1 * p10)
                     + (wx1 * wy1 * p11)
-                ) >> 6
-                dst_img[dy][dx] = interp
+                )
+                dst_img[dy][dx] = (weighted_sum * 41 + 512) >> 10
 
         return dst_img, dst_w, dst_h
 
@@ -724,14 +711,13 @@ class ORBGoldenHardwareModel:
                     krow = BINOMIAL_KERNEL_7X7[ky]
                     for kx in range(7):
                         acc += row[x + kx - 3] * krow[kx]
-                blurred[y][x] = acc >> 12
+                blurred[y][x] = (acc + 2048) >> 12
         return blurred
 
     def detect_fast_and_nms(
         self, img_for_fast: List[List[int]], width: int, height: int, level: int
     ) -> List[Keypoint]:
         """Streaming FAST-9 + 3x3 NMS with safe 37x37 orientation/BRIEF border."""
-        # Threshold scaled automatically if running on 6-bit pixels
         th = self.fast_threshold if self.fast_on_8bit else max(1, self.fast_threshold >> 2)
         scores = [[0] * width for _ in range(height)]
 
@@ -806,16 +792,12 @@ class ORBGoldenHardwareModel:
                 break
 
         if m10 >= 0 and m01 >= 0:
-            # Quadrant 0: [0, 90) deg -> sectors 0..15
             return sector_in_quad
         elif m10 < 0 and m01 >= 0:
-            # Quadrant 1: [90, 180) deg -> sectors 16..31
             return 16 + (15 - sector_in_quad)
         elif m10 < 0 and m01 < 0:
-            # Quadrant 2: [180, 270) deg -> sectors 32..47
             return 32 + sector_in_quad
         else:
-            # Quadrant 3: [270, 360) deg -> sectors 48..63
             return 48 + (15 - sector_in_quad)
 
     def generate_brief_descriptor_golden(
@@ -850,8 +832,12 @@ class ORBGoldenHardwareModel:
 
     def extract_features(self, raw_image_8bit: List[List[int]]) -> List[Keypoint]:
         """Runs the hardware ORB pipeline."""
-        pyr_8bit = self.build_pyramid(raw_image_8bit)
-        pyr_6bit = [self.quantize_to_6bit(lvl_img) for lvl_img in pyr_8bit]
+        if self.fast_on_8bit:
+            pyr_8bit = self.build_pyramid(raw_image_8bit)
+            pyr_6bit = [self.quantize_to_6bit(lvl_img) for lvl_img in pyr_8bit]
+        else:
+            pyr_6bit = self.build_pyramid(self.quantize_to_6bit(raw_image_8bit))
+            pyr_8bit = pyr_6bit
 
         all_keypoints: List[Keypoint] = []
         for lvl in range(self.pyramid_levels):
@@ -867,8 +853,6 @@ class ORBGoldenHardwareModel:
 
         return all_keypoints
 
-
-# Test image and OpenCV comparison
 
 def generate_rich_test_image(width: int = 320, height: int = 240) -> List[List[int]]:
     """Generates a multi-contrast test image with features across all 4 quadrants."""
@@ -943,8 +927,7 @@ def run_correlation_report(width: int = 320, height: int = 240) -> None:
             f"HW={len(hw_lvl[0])}x{len(hw_lvl)} | Mean Abs Diff={mae:.2f} LSB, Max Diff={max_err} LSB"
         )
 
-    # Level-0 FAST-9 + NMS keypoints
-    # Compare pre-NMS FAST-9 corner masks and post-NMS keypoints
+    # Level-0 FAST-9 and NMS comparison
     cv_pre_nms = {
         (x, y)
         for y in range(21, height - 21)
@@ -959,11 +942,14 @@ def run_correlation_report(width: int = 320, height: int = 240) -> None:
         for x in range(21, width - 21)
         if hw6_scores[y][x] > 0
     }
+    hw8_scores = ORBHardwareReferenceModel(
+        pixel_depth=8, fast_threshold=20, pyramid_levels=1, img_width=width, img_height=height
+    ).detect_fast_corners(img, width, height, 0)
     golden_pre_nms = {
         (x, y)
         for y in range(21, height - 21)
         for x in range(21, width - 21)
-        if opencv_model.fast9_corner_score(img, x, y, 20) > 0
+        if hw8_scores[y][x] > 0
     }
 
     cv_kpts_l0 = [
@@ -1026,7 +1012,7 @@ def run_correlation_report(width: int = 320, height: int = 240) -> None:
         abs_m10, abs_m01 = abs(m10), abs(m01)
         sec_in_q = 15
         for i, th in enumerate(TAN_THRESH_15):
-            if (abs_m01 << 8) < abs_m10 * th:
+            if (abs_m10 * th) >= (abs_m01 << 8):
                 sec_in_q = i
                 break
 
@@ -1083,7 +1069,7 @@ def run_correlation_report(width: int = 320, height: int = 240) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="FSLAM Golden ORB Reference & OpenCV C++ Correlation")
+    parser = argparse.ArgumentParser(description="Compare hardware ORB model against OpenCV ORBextractor")
     parser.add_argument("--width", type=int, default=320, help="Test image width")
     parser.add_argument("--height", type=int, default=240, help="Test image height")
     args = parser.parse_args()

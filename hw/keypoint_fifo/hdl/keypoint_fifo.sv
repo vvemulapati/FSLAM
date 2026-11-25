@@ -6,19 +6,17 @@
 
 // Simple dual-port RAM, registered read (1-cycle latency).
 module keypoint_fifo_ram #(
-    parameter int DATA_WIDTH = 46,
-    parameter int DEPTH      = 32,
+    parameter int DATA_WIDTH = 40,
+    parameter int DEPTH      = 512,
     parameter int ADDR_WIDTH = (DEPTH > 1) ? $clog2(DEPTH) : 1,
-    parameter     RAM_STYLE  = "block" // "block", "distributed", or "ultra"
+    parameter     RAM_STYLE  = "block"
 ) (
     input  logic                  clk,
 
-    // Write port
     input  logic                  wr_en,
     input  logic [ADDR_WIDTH-1:0] wr_addr,
     input  logic [DATA_WIDTH-1:0] wr_data,
 
-    // Read port
     input  logic                  rd_en,
     input  logic [ADDR_WIDTH-1:0] rd_addr,
     output logic [DATA_WIDTH-1:0] rd_data
@@ -43,8 +41,8 @@ endmodule
 
 
 module keypoint_fifo #(
-    parameter int DATA_WIDTH         = 46,
-    parameter int DEPTH              = 32,
+    parameter int DATA_WIDTH         = 40,
+    parameter int DEPTH              = 512,
     parameter int ALMOST_FULL_THRESH = DEPTH - 4,
     parameter int ADDR_WIDTH         = (DEPTH > 1) ? $clog2(DEPTH) : 1,
     parameter     RAM_STYLE          = "block"
@@ -52,7 +50,6 @@ module keypoint_fifo #(
     input  logic                  clk,
     input  logic                  rst_n,
 
-    // Write side
     input  logic                  wr_en,
     input  logic [DATA_WIDTH-1:0] din,
     output logic                  full,
@@ -66,17 +63,14 @@ module keypoint_fifo #(
     output logic                  almost_empty,
     output logic                  underflow,
 
-    // Status
     output logic [ADDR_WIDTH:0]   count
 );
 
-    // RAM address pointers and unread tracker
     logic [ADDR_WIDTH-1:0] wr_ptr;
     logic [ADDR_WIDTH-1:0] rd_ptr;
     logic [ADDR_WIDTH:0]   bram_count;
     logic [ADDR_WIDTH:0]   fifo_count;
 
-    // RAM interface signals
     logic                  bram_wr_en;
     logic                  bram_rd_en;
     logic [DATA_WIDTH-1:0] bram_rd_data;
@@ -105,7 +99,6 @@ module keypoint_fifo #(
         .rd_data(bram_rd_data)
     );
 
-    // Write pointer
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             wr_ptr <= '0;
@@ -137,12 +130,12 @@ module keypoint_fifo #(
             case ({bram_wr_en, bram_rd_en})
                 2'b10: bram_count <= bram_count + 1'b1;
                 2'b01: bram_count <= bram_count - 1'b1;
-                default: ; // 2'b00 or 2'b11: count unchanged
+                default: ;
             endcase
         end
     end
 
-    // Output buffer
+    // 2-entry FWFT output buffer (dout_reg + skid_reg)
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             dout_reg   <= '0;
@@ -152,7 +145,6 @@ module keypoint_fifo #(
         end else begin
             if (bram_rd_valid) begin
                 if (rd_en && dout_valid) begin
-                    // Pop: skid moves to dout, new RAM data goes to skid
                     if (skid_valid) begin
                         dout_reg   <= skid_reg;
                         skid_reg   <= bram_rd_data;
@@ -162,17 +154,14 @@ module keypoint_fifo #(
                         skid_valid <= 1'b0;
                     end
                 end else if (!dout_valid) begin
-                    // dout empty: load it directly
                     dout_reg   <= bram_rd_data;
                     dout_valid <= 1'b1;
                     skid_valid <= 1'b0;
                 end else begin
-                    // dout full and no pop: hold the new data in skid
                     skid_reg   <= bram_rd_data;
                     skid_valid <= 1'b1;
                 end
             end else if (rd_en && dout_valid) begin
-                // Pop with no new RAM data
                 if (skid_valid) begin
                     dout_reg   <= skid_reg;
                     skid_valid <= 1'b0;
@@ -183,7 +172,6 @@ module keypoint_fifo #(
         end
     end
 
-    // Occupancy count and flags
     always_ff @(posedge clk) begin
         if (!rst_n) begin
             fifo_count <= '0;
@@ -196,7 +184,7 @@ module keypoint_fifo #(
             case ({wr_en && !full, rd_en && !empty})
                 2'b10: fifo_count <= fifo_count + 1'b1;
                 2'b01: fifo_count <= fifo_count - 1'b1;
-                default: ; // 2'b00 or 2'b11: count unchanged
+                default: ;
             endcase
 
             if (wr_en && full)  overflow  <= 1'b1;

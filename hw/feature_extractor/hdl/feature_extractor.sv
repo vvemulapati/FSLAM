@@ -1,6 +1,5 @@
-// Single-scale ORB pipeline: FAST -> 3x3 NMS -> keypoint FIFO -> orientation
-// -> rBRIEF. Orientation and rBRIEF work on a 7x7-blurred copy of the input
-// through a shared 37x37 window buffer.
+// Per-level ORB feature extractor. Runs FAST-9 and 3x3 NMS on the raw stream
+// while a parallel 7x7 blur and shared 37x37 window feed orientation and rBRIEF.
 
 `timescale 1ns / 1ps
 
@@ -10,21 +9,18 @@ module feature_extractor #(
     parameter int IMG_HEIGHT      = 480,
     parameter int DESCRIPTOR_BITS = 256,
     parameter int FAST_THRESHOLD  = 5,
-    parameter int FIFO_DEPTH      = 32,
+    parameter int FIFO_DEPTH      = 512,
     parameter int ANGLE_BITS      = 6,
     parameter int COORD_BITS      = 6
 ) (
     input  logic                                  clk,
     input  logic                                  rst_n,
 
-    // Streaming pixel input from image pyramid
     input  logic                                  pixel_valid,
     input  logic [PIXEL_WIDTH-1:0]                pixel_in,
 
-    // Pre-computed 256 BRIEF test coordinate pairs
     input  logic signed [COORD_BITS-1:0]          brief_pattern [0:DESCRIPTOR_BITS-1][0:3],
 
-    // Output extracted feature stream
     output logic                                  feature_valid,
     output logic [DESCRIPTOR_BITS-1:0]            feature_descriptor,
     output logic [15:0]                           feature_score,
@@ -32,13 +28,11 @@ module feature_extractor #(
     output logic [11:0]                           feature_y,
     output logic [ANGLE_BITS-1:0]                 feature_orientation,
 
-    // Pipeline status
     output logic                                  stall_req,
     output logic                                  busy,
     output logic                                  fifo_empty
 );
 
-    // FAST
     logic        fast_valid;
     logic [15:0] fast_score;
     logic [11:0] fast_x, fast_y;
@@ -59,7 +53,6 @@ module feature_extractor #(
         .corner_y(fast_y)
     );
 
-    // 3x3 non-maximum suppression
     logic        nms_valid;
     logic [15:0] nms_score;
     logic [11:0] nms_x, nms_y;
@@ -81,13 +74,11 @@ module feature_extractor #(
         .keypoint_y(nms_y)
     );
 
-    // 7x7 blur (input to orientation and rBRIEF)
     logic                   blur_valid;
     logic [PIXEL_WIDTH-1:0] blur_pixel;
 
     gaussian_blur #(
         .PIXEL_WIDTH(PIXEL_WIDTH),
-        .KERNEL_SIZE(7),
         .IMG_WIDTH(IMG_WIDTH),
         .IMG_HEIGHT(IMG_HEIGHT)
     ) u_blur (
@@ -125,7 +116,7 @@ module feature_extractor #(
         .win(blur_win)
     );
 
-    // Incoming column Cin for orientation
+    // Newest blurred column (right edge of 37x37 window)
     logic [PIXEL_WIDTH-1:0] ori_col_in [36:0];
     always_comb begin
         for (int r = 0; r < 37; r++) begin
@@ -133,18 +124,17 @@ module feature_extractor #(
         end
     end
 
-    // Keep keypoints whose 37x37 patch lies inside the valid blurred frame
+    // Keep keypoints whose 37x37 patch stays inside the 3-pixel blur border: [18, W-22] x [18, H-22]
     wire nms_in_bounds = (nms_x >= 12'd18) && (nms_x <= 12'(IMG_WIDTH - 22)) &&
                          (nms_y >= 12'd18) && (nms_y <= 12'(IMG_HEIGHT - 22));
 
-    // Keypoint FIFO: {score, y, x} from NMS
     logic        kp_fifo_full, kp_fifo_empty;
     logic [39:0] kp_fifo_din, kp_fifo_dout;
     logic        kp_fifo_rd_en;
     logic [$clog2(FIFO_DEPTH):0] kp_fifo_count;
 
     assign kp_fifo_din = {nms_score, nms_y, nms_x};
-    assign fifo_empty  = kp_fifo_empty;
+    assign fifo_empty  = kp_fifo_empty && (kp_fifo_count == '0);
 
     keypoint_fifo #(
         .DATA_WIDTH(40),
@@ -165,7 +155,7 @@ module feature_extractor #(
         .count(kp_fifo_count)
     );
 
-    // Dispatch: pop the head keypoint when the 37x37 window center reaches (head_x, head_y)
+    // Pop head keypoint when blurred 37x37 window center reaches (head_x, head_y)
     logic        ori_busy;
     logic        brief_busy;
     logic        ori_valid;
@@ -212,7 +202,6 @@ module feature_extractor #(
         end
     end
 
-    // Orientation
     orientation #(
         .PIXEL_WIDTH(PIXEL_WIDTH),
         .WINDOW_SIZE(37),
@@ -236,7 +225,6 @@ module feature_extractor #(
         .busy(ori_busy)
     );
 
-    // rBRIEF
     brief #(
         .PIXEL_WIDTH(PIXEL_WIDTH),
         .WINDOW_SIZE(37),
@@ -267,6 +255,6 @@ module feature_extractor #(
         .busy(brief_busy)
     );
 
-    assign busy = brief_busy || ori_busy || disp_valid || ori_valid || !kp_fifo_empty;
+    assign busy = brief_busy || ori_busy || disp_valid || ori_valid || !fifo_empty;
 
 endmodule

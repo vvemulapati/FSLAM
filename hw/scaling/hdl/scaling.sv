@@ -22,7 +22,6 @@ module scaling #(
     logic [11:0] win_x1, win_y1;
     logic [2:0]  win_frac_x, win_frac_y;
 
-    // 2x2 window from window_buffer
     logic [PIXEL_WIDTH-1:0] win [1:0][1:0];
     logic                   win_valid;
 

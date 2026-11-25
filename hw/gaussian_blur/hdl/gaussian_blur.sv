@@ -6,7 +6,6 @@
 
 module gaussian_blur #(
     parameter int PIXEL_WIDTH = 6,
-    parameter int KERNEL_SIZE = 7,
     parameter int IMG_WIDTH   = 640,
     parameter int IMG_HEIGHT  = 480
 ) (
@@ -19,6 +18,8 @@ module gaussian_blur #(
     output logic                   blur_valid,
     output logic [PIXEL_WIDTH-1:0] pixel_out
 );
+
+    localparam int KERNEL_SIZE = 7;
 
     logic [PIXEL_WIDTH-1:0] win [6:0][6:0];
     logic                   win_valid;

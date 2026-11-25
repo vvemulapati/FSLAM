@@ -94,6 +94,7 @@ def compare_features(
 
     matched_kpts = 0
     exact_coord_kpts = 0
+    exact_scores = 0
     exact_orientations = 0
     descriptor_hamming_dist_sum = 0
 
@@ -107,6 +108,7 @@ def compare_features(
         lvl = int(rtl.get("level", 0))
         x = int(rtl.get("x", 0))
         y = int(rtl.get("y", 0))
+        score = int(rtl.get("score", 0))
         ori = int(rtl.get("ori", 0))
         rtl_desc = int(rtl.get("desc", "0"), 16)
 
@@ -127,6 +129,8 @@ def compare_features(
             matched_kpts += 1
             if min_dist_sq == 0:
                 exact_coord_kpts += 1
+            if score == best_ref.score:
+                exact_scores += 1
 
             ori_diff = abs(ori - best_ref.angle_sector) % 64
             if ori_diff == 0:
@@ -144,6 +148,7 @@ def compare_features(
     passed = (
         total_rtl == total_ref
         and exact_coord_kpts == total_ref
+        and exact_scores == total_ref
         and exact_orientations == total_ref
         and descriptor_hamming_dist_sum == 0
     )
@@ -152,16 +157,29 @@ def compare_features(
         "ref_count": total_ref,
         "rtl_count": total_rtl,
         "exact_coords": exact_coord_kpts,
+        "exact_scores": exact_scores,
         "exact_ori": exact_orientations,
         "match_rate": match_rate,
         "ori_accuracy": ori_accuracy,
         "avg_h_dist": avg_h_dist,
+        "h_dist_sum": descriptor_hamming_dist_sum,
+        "matched_kpts": matched_kpts,
     }
     return passed, stats
 
 
+def _vcs_env_prefix() -> str:
+    return (
+        "if ! command -v vcs >/dev/null 2>&1; then "
+        "if [ -n \"${VCS_HOME:-}\" ] && [ -x \"$VCS_HOME/bin/vcs\" ]; then "
+        "export PATH=\"$VCS_HOME/bin:$PATH\"; "
+        "export LD_LIBRARY_PATH=\"$VCS_HOME/linux64/lib:${LD_LIBRARY_PATH:-}\"; "
+        "elif type module >/dev/null 2>&1; then module load vcs >/dev/null 2>&1 || true; fi; fi"
+    )
+
+
 def compile_vcs(hw_dir: str) -> bool:
-    """Compiles the RTL design with Synopsys VCS once before running test images."""
+    """Compiles the RTL design with Synopsys VCS."""
     filelist_path = os.path.join(hw_dir, "filelist.f")
     if not os.path.exists(filelist_path):
         print(f"ERROR: {filelist_path} not found")
@@ -169,9 +187,7 @@ def compile_vcs(hw_dir: str) -> bool:
 
     print("Compiling RTL with Synopsys VCS...")
     vcs_compile_cmd = (
-        "source ~/git/hxc/env/init.sh && "
-        "module load licenses/synopsys vcs/2025-06 && "
-        f"cd {hw_dir} && "
+        f"{_vcs_env_prefix()} && cd {hw_dir} && "
         "vcs -full64 -sverilog +v2k -timescale=1ns/1ps -f filelist.f tb_orb_cosim.sv -o simv_cosim"
     )
     proc = subprocess.run(
@@ -189,12 +205,7 @@ def compile_vcs(hw_dir: str) -> bool:
 
 def run_vcs_sim(hw_dir: str) -> bool:
     """Runs the compiled VCS binary simv_cosim on input_pixels.hex."""
-    vcs_run_cmd = (
-        "source ~/git/hxc/env/init.sh && "
-        "module load licenses/synopsys vcs/2025-06 && "
-        f"cd {hw_dir} && "
-        "./simv_cosim"
-    )
+    vcs_run_cmd = f"{_vcs_env_prefix()} && cd {hw_dir} && ./simv_cosim"
     proc = subprocess.run(
         ["bash", "-c", vcs_run_cmd],
         stdout=subprocess.PIPE,
@@ -297,7 +308,7 @@ def run_verification(hw_dir: str, image_filter: str = "all", sim: str = "vcs") -
         passed, stats = compare_features(ref_model, ref_features, rtl_features, has_xz)
         status_str = "PASS" if passed else "FAIL"
         print(
-            f"  -> Result: {status_str} | Features: {stats.get('rtl_count', 0)}/{stats.get('ref_count', 0)} "
+            f"    Result: {status_str} | Features: {stats.get('rtl_count', 0)}/{stats.get('ref_count', 0)} "
             f"| Exact Coords: {stats.get('exact_coords', 0)}/{stats.get('ref_count', 0)} "
             f"| Exact Ori: {stats.get('exact_ori', 0)}/{stats.get('ref_count', 0)} "
             f"| Avg Hamming Dist: {stats.get('avg_h_dist', 0.0):.2f} bits"
@@ -311,6 +322,8 @@ def run_verification(hw_dir: str, image_filter: str = "all", sim: str = "vcs") -
     total_rtl_all = 0
     total_coord_all = 0
     total_ori_all = 0
+    total_h_sum_all = 0.0
+    total_matched_all = 0
     for name, _, passed, st in summary_rows:
         r_cnt = int(st.get("ref_count", 0))
         rtl_cnt = int(st.get("rtl_count", 0))
@@ -321,13 +334,16 @@ def run_verification(hw_dir: str, image_filter: str = "all", sim: str = "vcs") -
         total_rtl_all += rtl_cnt
         total_coord_all += c_cnt
         total_ori_all += o_cnt
+        total_h_sum_all += float(st.get("h_dist_sum", 0.0))
+        total_matched_all += int(st.get("matched_kpts", 0))
         print(
             f"{name:<26}  {r_cnt:5d}  {rtl_cnt:5d}  {f'{c_cnt}/{r_cnt}':>12}  "
             f"{f'{o_cnt}/{r_cnt}':>12}  {h_avg:6.2f} b   {'PASS' if passed else 'FAIL':<6}"
         )
+    overall_h_avg = total_h_sum_all / max(1, total_matched_all)
     print(
         f"{'Total (' + str(len(summary_rows)) + ' images)':<26}  {total_ref_all:5d}  {total_rtl_all:5d}  "
-        f"{f'{total_coord_all}/{total_ref_all}':>12}  {f'{total_ori_all}/{total_ref_all}':>12}    0.00 b   "
+        f"{f'{total_coord_all}/{total_ref_all}':>12}  {f'{total_ori_all}/{total_ref_all}':>12}  {overall_h_avg:6.2f} b   "
         f"{'PASS' if all_passed else 'FAIL':<6}"
     )
     print("PASS" if all_passed else "FAIL")
@@ -336,7 +352,8 @@ def run_verification(hw_dir: str, image_filter: str = "all", sim: str = "vcs") -
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run ORB RTL vs. Reference Model Co-Simulation")
-    parser.add_argument("hw_dir", nargs="?", default="/home/vibhakarv/sandbox/FSLAM/hw", help="Path to hw directory")
+    default_hw = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hw"))
+    parser.add_argument("hw_dir", nargs="?", default=default_hw, help="Path to hw directory")
     parser.add_argument("--image", default="all", help="Test image name (or 'all', or path to a .pgm file)")
     parser.add_argument("--sim", default="vcs", choices=["vcs", "verilator"], help="Simulator to run (vcs or verilator)")
     args = parser.parse_args()
